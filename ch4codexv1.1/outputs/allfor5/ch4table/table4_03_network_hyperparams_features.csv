@@ -1,0 +1,8 @@
+序号,特征名,说明
+1,h_fault,故障时刻高度 (km)
+2,v_fault,故障时刻速度 (m/s)
+3,gamma_fault,故障时刻航迹倾角 (rad)
+4,m_fault,故障时刻质量 (kg)
+5,t_fault,故障时刻时间 (s)
+6,eta,故障严重度 [0,1]
+7-11,fault_type_onehot,故障类型独热编码 (F1-F5)

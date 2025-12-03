@@ -1,0 +1,1 @@
+fault_id,eta,domain_initial,domain_final,solver_success,outer_iterations,max_virtual_control_norm,trust_region_radius_final,terminal_pos_error_norm,terminal_vel_error_norm,max_downrange_diff,max_altitude_diff,final_feas_violation,total_cost

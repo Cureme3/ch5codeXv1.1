@@ -1,0 +1,5 @@
+{
+    "python.analysis.extraPaths": [
+        "./ch4codexv1.1"
+    ]
+}

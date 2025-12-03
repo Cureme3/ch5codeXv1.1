@@ -1,0 +1,87 @@
+{
+  "mode": "simple+",
+  "centers": 36,
+  "sigma": 0.6666290690354877,
+  "ridge_lam": 0.01,
+  "hyperparams": {
+    "sigma_star": 0.6666290690354877,
+    "lambda_star": 0.01,
+    "val_best_err": 0.39473684210526316,
+    "grid_evaluations": 15
+  },
+  "acc": 0.6666666666666666,
+  "macro_precision": 0.7154401154401153,
+  "macro_recall": 0.6462962962962963,
+  "macro_f1": 0.6791127751972666,
+  "confusion": [
+    [
+      1,
+      3,
+      1,
+      0,
+      0,
+      0
+    ],
+    [
+      0,
+      4,
+      1,
+      1,
+      0,
+      3
+    ],
+    [
+      0,
+      0,
+      7,
+      0,
+      0,
+      2
+    ],
+    [
+      0,
+      0,
+      0,
+      6,
+      0,
+      0
+    ],
+    [
+      0,
+      0,
+      0,
+      0,
+      9,
+      1
+    ],
+    [
+      0,
+      0,
+      1,
+      2,
+      1,
+      5
+    ]
+  ],
+  "window_level": {
+    "acc": 0.6666666666666666,
+    "macroF1": 0.6791127751972666
+  },
+  "flight_level": {},
+  "nominal_threshold": null,
+  "diagnostics": {
+    "flight_nominal_min_ratio": 0.7,
+    "flight_fault_min_ratio": 0.4,
+    "flight_delay_min_ratio": 0.55,
+    "flight_recall_per_class": [],
+    "oversample_sensor_bias": 1.0
+  },
+  "nominal_sigma": 1.5,
+  "preprocess": {
+    "winsor_pct": 0.02,
+    "log_energy": false,
+    "use_pairwise": false,
+    "dim_reduction": "pca",
+    "channel_mode": "raw_z"
+  }
+}

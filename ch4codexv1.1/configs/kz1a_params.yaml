@@ -1,0 +1,91 @@
+﻿rocket:
+  name: "快舟一号甲"
+  length_m: 19.8
+  liftoff_mass_kg: 30000
+  max_diameter_m: 1.4
+  fairing_diameter_m: 1.4
+  liftoff_thrust_kN: 537
+  payload_LEO_kg: 300
+  payload_SSO_700km_kg: 200
+
+stages:
+  - index: 1
+    type: "solid"
+    diameter_m: 1.4
+    length_m: 8.0
+    mass_init_kg: 16600
+    dry_mass_kg: 2600
+    burn_time_s: 65.0
+    thrust_kN: 537.0
+    isp_s: 250.0
+    sep_time_s: 83.0
+  - index: 2
+    type: "solid"
+    diameter_m: 1.4
+    length_m: 5.5
+    mass_init_kg: 8686
+    dry_mass_kg: 1300
+    burn_time_s: 62.0
+    thrust_kN: 250.0
+    isp_s: 268.0
+    sep_time_s: 161.0
+  - index: 3
+    type: "solid"
+    diameter_m: 1.2
+    length_m: 4.5
+    mass_init_kg: 3183
+    dry_mass_kg: 520
+    burn_time_s: 55.0
+    thrust_kN: 120.0
+    isp_s: 280.0
+  - index: 4
+    type: "liquid"
+    diameter_m: 1.2
+    length_m: 2.5
+    mass_init_kg: 800
+    dry_mass_kg: 450
+    burn_time_s: 765.0
+    thrust_kN: 15.0
+    isp_s: 315.0
+
+timeline:
+  liftoff_s: 0.0
+  t_12_sep_s: 83.0
+  t_23_sep_s: 161.0
+  t_fairing_jettison_s: 176.1
+  t_3_ignition_s: 192.1
+  t_34_sep_s: 284.2
+  t_4_ignition_s: 287.2
+  t_4_cutoff_s: 1052.2
+
+constraints:
+  max_dynamic_pressure_kpa: 55.0
+  max_normal_load_g: 3.5
+  nominal_thrust_cone_deg: 8.0
+  degraded_thrust_cone_deg: 5.0
+
+orbit:
+  eval_time_s: 950.0      # 第四级期间用于入轨评估的时间点
+  h_target_km: 700.0      # 目标高度
+  h_min_km: 500.0
+  h_max_km: 800.0
+  v_tol_frac: 0.10        # 允许速度相对圆轨误差
+
+staging:
+  stage1:
+    thrust_scale: 1.0
+    isp_scale: 1.0
+  stage2:
+    thrust_scale: 1.0
+    isp_scale: 1.0
+  stage3:
+    thrust_scale: 0.9
+    isp_scale: 1.0
+  stage4:
+    thrust_scale: 1.0
+    isp_scale: 1.0
+
+fault_scenarios:
+  F2_tvc_rate4:
+    tvc_rate_deg_s: 0.5  # TVC 速率限制 0.5 deg/s 并叠加角偏，用于增强示意
+    angle_bias_deg: -12.0

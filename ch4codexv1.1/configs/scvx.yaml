@@ -1,0 +1,28 @@
+scvx:
+  horizon_s: 80.0
+  nodes: 31
+  max_iterations: 5
+  trust_region_state: 250.0
+  trust_region_control: 25.0
+  virtual_control_weight: 1000.0
+  terminal_weight: 1.0
+  control_weight: 0.05
+  step_shrink: 0.5
+  step_expand: 1.4
+  acceptance_ratio: 0.2
+  solver: "ECOS"
+  max_solver_time_s: 2.0
+
+learning_hotstart:
+  hidden_layers: [32, 32]
+  activation: "tanh"
+  training_epochs: 200
+  batch_size: 64
+  dataset_path: "data/hotstart_samples.pkl"
+  default_weights: [1.0, 0.1, 500.0]
+
+monte_carlo:
+  samples: 200
+  thrust_degradation_range: [0.0, 0.25]
+  cone_tightening_range_deg: [0.0, 4.0]
+  event_delay_range_s: [-2.0, 5.0]

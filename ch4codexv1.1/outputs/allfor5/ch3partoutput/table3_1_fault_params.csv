@@ -1,0 +1,7 @@
+Case ID,Fault Type,Parameters,Description
+1,Nominal,None,名义工况，无故障
+2,Thrust Drop,Ratio=0.15,推力下降15%（全程生效）
+3,TVC Rate Limit,Limit=0.35 deg/s,TVC摆动速率限制 (0.35°/s)
+4,TVC Stuck,"t=30s, duration=20s",TVC卡滞，发生于30s，持续20s
+5,Sensor Bias,"Bias=(1.5, 0, 0)",加速度计x轴偏置 1.5 m/s²
+6,Event Delay,"S2_sep=2.0s, Fairing=2.0s",关键事件延迟 (S2分离/整流罩)

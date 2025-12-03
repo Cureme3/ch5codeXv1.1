@@ -1,0 +1,5 @@
+﻿Module,Ops/Cycle,Cycle (ms),Freq (Hz),Note
+STFT Feature,448,50,20,可裁剪
+PWVD Feature,322,50,20,可降采样
+RBF Inference,192,50,20,可合并
+ESO Gen,2000,10,100,硬实时
