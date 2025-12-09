@@ -10,25 +10,54 @@ def stft(x, win_len, hop):
         frames.append(np.abs(spec))
     return np.array(frames).T
 def pwvd(x, win_len):
-    x=np.asarray(x, dtype=float); n=len(x); L=win_len//2
-    w=np.hanning(2*L+1); F=n; tfr=np.zeros((F,n))
-    for t in range(n):
-        Lp=min(L,t,n-1-t)
-        for tau in range(-Lp, Lp+1):
-            t1=t+tau; t2=t-tau
-            tfr[(tau)%F,t] += w[tau+L]*x[t1]*x[t2]
-    tfr=np.fft.fft(tfr, axis=0); tfr=np.abs(tfr)
-    return tfr[:F//2, :]
+    """伪Wigner-Ville分布 (优化版)。"""
+    x = np.asarray(x, dtype=float)
+    n = len(x)
+    L = win_len // 2
+    w = np.hanning(2 * L + 1)
+
+    # 下采样以提高性能 (每4个点取1个)
+    step = max(1, n // 256)
+    t_indices = np.arange(0, n, step)
+    n_out = len(t_indices)
+
+    tfr = np.zeros((n, n_out), dtype=complex)
+
+    for idx, t in enumerate(t_indices):
+        Lp = min(L, t, n - 1 - t)
+        tau_range = np.arange(-Lp, Lp + 1)
+        t1 = t + tau_range
+        t2 = t - tau_range
+        weights = w[tau_range + L]
+        tfr[tau_range % n, idx] = weights * x[t1] * x[t2]
+
+    tfr = np.fft.fft(tfr, axis=0)
+    tfr = np.abs(tfr)
+    return tfr[:n // 2, :]
 def sample_entropy(x, m=2, r=None):
-    x=np.asarray(x, dtype=float); n=len(x)
-    if r is None: r=0.2*np.std(x)+1e-12
+    """样本熵计算 (优化版: 下采样长信号)。"""
+    x = np.asarray(x, dtype=float)
+    n = len(x)
+
+    # 对长信号下采样以提高性能
+    max_len = 500
+    if n > max_len:
+        step = n // max_len
+        x = x[::step]
+        n = len(x)
+
+    if r is None:
+        r = 0.2 * np.std(x) + 1e-12
+
     def _phi(m):
-        c=0
-        for i in range(n-m):
-            for j in range(i+1, n-m):
-                if np.max(np.abs(x[i:i+m]-x[j:j+m]))<=r: c+=1
-        return c/(n-m+1e-12)
-    return -np.log((_phi(m+1)+1e-12)/(_phi(m)+1e-12))
+        c = 0
+        for i in range(n - m):
+            for j in range(i + 1, n - m):
+                if np.max(np.abs(x[i:i+m] - x[j:j+m])) <= r:
+                    c += 1
+        return c / (n - m + 1e-12)
+
+    return -np.log((_phi(m + 1) + 1e-12) / (_phi(m) + 1e-12))
 def band_energy(spec, f_lo, f_hi, fs):
     F,T=spec.shape; freqs=np.linspace(0, fs/2, F)
     idx=(freqs>=f_lo)&(freqs<=f_hi); return np.sum(spec[idx,:], axis=0)

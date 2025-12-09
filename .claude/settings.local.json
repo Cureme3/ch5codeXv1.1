@@ -59,7 +59,16 @@
       "Bash(D:/Users/anaconda3/envs/chap3/python.exe -m scripts.make_figs_ch5_section5:*)",
       "Bash(D:/Users/anaconda3/envs/chap3/python.exe scripts/make_figs_ch5_section5.py)",
       "Bash(explorer:*)",
-      "Bash(mkdir -p:*)"
+      "Bash(mkdir -p:*)",
+      "Bash(\"D:/Users/anaconda3/envs/chap3/python.exe\" scripts/make_fig_all.py:*)",
+      "Bash(\"/mnt/d/Users/anaconda3/envs/chap3/python.exe\" \"/mnt/d/python projects/ch5codeXv1.1/ch3codev1.1/scripts/make_fig_all.py\" --fig 3-4 --outdir \"/mnt/d/python projects/softwarev1.1/ch3codev1.1/exports/ch3_figures\" --n_samples 300 --workers 4)",
+      "Bash(/mnt/d/Users/anaconda3/envs/chap3/python.exe:*)",
+      "Bash(\"D:/Users/anaconda3/envs/chap3/python.exe\" -m pipeline.run_full_pipeline:*)",
+      "Bash(PYTHONPATH=\"/mnt/d/python projects/ch4codeXv1.1/src\" /mnt/d/Users/anaconda3/envs/chap3/python.exe:*)",
+      "Bash(PYTHONPATH=\"/mnt/d/python projects/ch4codeXv1.1\" /mnt/d/Users/anaconda3/envs/chap3/python.exe:*)",
+      "Bash(explorer.exe \"D:\\python projects\\ch5codeXv1.1\\outputs\\figures\\ch5\")",
+      "Bash(explorer.exe \"D:\\python projects\\ch5codeXv1.1\\outputs\\figures\\diagnosis\")",
+      "Bash(explorer.exe \"D:\\python projects\\ch5codeXv1.1\\outputs\\figures\\diagnosis\\diag_F1_thrust_deg15_eta0.5.png\")"
     ],
     "deny": [],
     "ask": []

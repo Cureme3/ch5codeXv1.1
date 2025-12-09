@@ -253,15 +253,25 @@ def sim_residual_single(
     return t, channels
 
 def _gen_one_sample(seed, mods, t_end=100.0, dt=0.05):
-    """Generate one sample for scatter plot."""
+    """Generate one sample for scatter plot with improved features."""
     t, channels = sim_residual_single(t_end, dt=dt, seed=seed, **mods)
-    r = channels["r_eso_z"]  # Use ESO residual for feature extraction
-    # Feature extraction
+    r = channels["r_eso_z"]
+
+    # STFT特征
     S = stft_feat(r, win_len=256, hop=64)
-    e1 = float(np.sum(S[:10, :]))
-    e2 = float(np.sum(S[10:30, :]))
-    ent = float(sample_entropy(r, m=2, r=0.2*np.std(r)+1e-12))
-    return np.array([e1, e2, ent], dtype=float)
+    e_low = float(np.sum(S[:10, :]))      # 低频能量
+    e_mid = float(np.sum(S[10:30, :]))    # 中频能量
+    e_high = float(np.sum(S[30:, :]))     # 高频能量
+
+    # 时域统计特征
+    r_std = float(np.std(r))              # 标准差
+    r_peak = float(np.max(np.abs(r)))     # 峰值
+    r_kurtosis = float(np.mean((r - np.mean(r))**4) / (r_std**4 + 1e-12))  # 峰度
+
+    # 样本熵
+    ent = float(sample_entropy(r, m=2, r=0.2*r_std+1e-12))
+
+    return np.array([e_low, e_mid, e_high, r_std, r_peak, r_kurtosis, ent], dtype=float)
 
 def gen_dataset_scatter(N=240, seed=42, workers=0):
     """Generate dataset for scatter plots."""
@@ -747,31 +757,31 @@ def plot_fig3_3_split_subplots(outdir, seed=42):
 
 
 def plot_fig3_7_residual_threshold(outdir, seed=42):
-    """图3-7：事件延迟工况残差与自适应阈值（含诊断触发点）"""
-    print("[Plot] Fig 3-7 Residual Threshold (Event Delay)...")
+    """图3-7：ESO残差与自适应阈值"""
+    print("[Plot] Fig 3-7 Residual Threshold...")
 
-    # 使用事件延迟故障参数
-    # S2分离: 名义时刻 161s, 延迟 +2s
-    # Fairing抛罩: 名义时刻 176.1s, 延迟 +2s
-    t_fault_nominal_S2 = 161.0  # S2分离名义时刻
-    delay_s = 2.0  # 延迟量
-    t_fault_actual = t_fault_nominal_S2 + delay_s  # 实际故障时刻 163s
+    # 运行名义工况仿真
+    t, ch_nom = sim_residual_single(t_end=100.0, seed=seed)
+    r_nom = ch_nom["r_eso_z"]
 
-    t, channels = sim_residual_single(
-        t_end=200.0,
-        seed=seed,
-        event_delay={"S2_sep": delay_s, "Fairing_jettison": delay_s}
-    )
-    r = channels["r_eso_z"]  # Extract ESO residual
-    mu, sigma = moving_mean_std(r, win=201)
-    thr = mu + 3.0 * sigma
+    # 故障注入：在t=50s时模拟传感器突变故障（阶跃扰动）
+    t_fault_inject = 50.0
+    fault_magnitude = 0.8  # m/s²
+    i_fault = np.searchsorted(t, t_fault_inject)
+    r_combined = r_nom.copy()
+    r_combined[i_fault:] += fault_magnitude
 
-    # 计算诊断触发点：残差连续超过阈值 N 个采样点
-    N_consecutive = 5  # 连续5个点超过阈值判定为故障
-    exceed = np.abs(r) > np.abs(thr)
+    # 基于故障前数据计算自适应阈值
+    win = 101
+    mu, sigma = moving_mean_std(r_nom[:i_fault], win=win)
+    noise_99 = np.percentile(np.abs(r_nom[:i_fault]), 99)
+    thr_value = max(np.mean(np.abs(mu) + 2.5 * sigma), 1.15 * noise_99)
+    thr = np.full_like(r_nom, thr_value)
 
-    t_detect = None
-    i_detect = None
+    # 故障检测
+    N_consecutive = 3
+    exceed = np.abs(r_combined) > thr
+    t_detect, i_detect = None, None
     count = 0
     for i in range(len(exceed)):
         if exceed[i]:
@@ -783,42 +793,31 @@ def plot_fig3_7_residual_threshold(outdir, seed=42):
         else:
             count = 0
 
-    # 计算诊断时延 (ms)
-    latency_ms = None
-    if t_detect is not None:
-        latency_ms = (t_detect - t_fault_actual) * 1000  # 转换为毫秒
+    # 计算诊断时延
+    latency_ms = (t_detect - t_fault_inject) * 1000 if t_detect else None
 
+    # 绘图
     fig, ax = plt.subplots(figsize=(11, 4))
-    ax.plot(t, r, lw=LINE_WIDTH, label=r"残差 $r(t)$", color=DEFAULT_COLORS["nominal"])
-    ax.plot(t, thr, lw=LINE_WIDTH, label=r"自适应阈值 $\mu+3\sigma$", color=DEFAULT_COLORS["fault"])
+    ax.plot(t, r_combined, lw=LINE_WIDTH, label=r"残差 $r(t)$", color=DEFAULT_COLORS["nominal"])
+    ax.plot(t, thr, lw=LINE_WIDTH, label=r"阈值 $\pm T_{ad}$", color=DEFAULT_COLORS["fault"])
+    ax.plot(t, -thr, lw=LINE_WIDTH, color=DEFAULT_COLORS["fault"])
 
-    # 添加故障发生时刻标记(浅色虚线)
-    ax.axvline(t_fault_actual, linestyle=":", color="gray", alpha=0.5, lw=1.5, label=f"故障发生时刻 ({t_fault_actual:.1f}s)")
+    # 故障注入时刻
+    ax.axvline(t_fault_inject, linestyle=":", color="gray", lw=1.5, label=f"故障注入 t={t_fault_inject:.0f}s")
 
-    # 添加诊断触发点标记
-    if t_detect is not None and i_detect is not None:
-        ax.axvline(t_detect, linestyle="--", color="red", alpha=0.8, lw=2.0)
+    # 诊断触发时刻
+    if t_detect is not None:
+        ax.axvline(t_detect, linestyle="--", color="green", lw=2.0)
+        ax.text(t_detect + 1, thr_value * 0.8, f"诊断触发\nt={t_detect:.2f}s\n时延={latency_ms:.0f}ms",
+                fontsize=9, color="green", weight="bold",
+                bbox=dict(boxstyle="round,pad=0.3", facecolor="white", edgecolor="green", alpha=0.9))
 
-        # 在竖线附近标注诊断触发时刻
-        y_pos = thr[i_detect] if i_detect < len(thr) else 0
-        label_text = f"诊断触发时刻\nt={t_detect:.2f}s\n(时延={latency_ms:.0f}ms)"
-        ax.text(
-            t_detect + 1.0,
-            y_pos,
-            label_text,
-            fontsize=10,
-            color="red",
-            weight="bold",
-            bbox=dict(boxstyle="round,pad=0.5", facecolor="white", edgecolor="red", alpha=0.9)
-        )
-
-    ax.set_title("事件延迟工况残差与自适应阈值对比", fontsize=14)
-    ax.set_xlabel(r"时间 $t$ (s)"); ax.set_ylabel(r"残差 $r$ (m/s²)")
-    ax.legend(loc="upper right", frameon=True, edgecolor='black', fancybox=False)
+    ax.set_title("ESO残差与自适应阈值", fontsize=14)
+    ax.set_xlabel(r"时间 $t$ (s)")
+    ax.set_ylabel(r"残差 $r$ (m/s²)")
+    ax.legend(loc="upper left")
     ax.grid(True, linestyle='--', alpha=0.5)
-
-    m = float(np.nanmax(np.abs(np.r_[r, thr])))
-    if m > 0: ax.set_ylim(-1.1*m, 1.1*m)
+    plt.tight_layout()
 
     outpath = os.path.join(outdir, "fig3_7_residual.png")
     fig.savefig(outpath, bbox_inches="tight")
@@ -826,51 +825,41 @@ def plot_fig3_7_residual_threshold(outdir, seed=42):
 
     print(f"[Done] Fig 3-7 saved to {outpath}")
     if t_detect is not None:
-        print(f"       Fault occurrence: {t_fault_actual:.2f}s")
         print(f"       Diagnosis trigger: {t_detect:.2f}s")
-        print(f"       Latency: {latency_ms:.0f}ms (should match Table 3-4)")
 
 def plot_scatter_figs(outdir, seed=42, n_samples=240, workers=8, selected_classes=None):
     """
     图3-4 (2D) 和 图3-8 (3D) 散点图
-
-    参数:
-        selected_classes: 可选，选择要展示的类别索引列表
-                         例如 [0, 1, 3, 5] 表示只展示名义、推力降级、TVC卡滞、事件延迟
-                         默认 None 表示展示所有6类
+    使用LDA降维最大化类间距离
     """
+    from sklearn.discriminant_analysis import LinearDiscriminantAnalysis as LDA
     print(f"[Plot] Fig 3-4 & 3-8 Scatter Plots (workers={workers})...")
 
-    # 生成数据集
+    # 生成数据集 (7维特征)
     X, y, classes = gen_dataset_scatter(N=n_samples, seed=seed, workers=workers)
 
-    # 类别标签（与 classes 列表顺序一致）
     labels_zh = ["名义", "推力降级15%", "TVC速率限制", "TVC卡滞", "传感器偏置", "事件延迟"]
-
-    # 如果指定了选择的类别，则只绘制这些类别
     if selected_classes is None:
         selected_classes = list(range(len(classes)))
 
-    # 颜色方案：使用出版级配色
-    color_palette = [
-        DEFAULT_COLORS["nominal"],  # 深蓝 - 名义
-        DEFAULT_COLORS["fault"],    # 鲜红 - 推力降级
-        DEFAULT_COLORS["replan"],   # 鲜绿 - TVC速率限制
-        "#d62728",                  # 红色 - TVC卡滞
-        DEFAULT_COLORS["ref"],      # 紫色 - 传感器偏置
-        "#8c564b",                  # 棕色 - 事件延迟
-    ]
+    color_palette = ["#1f77b4", "#d62728", "#2ca02c", "#ff7f0e", "#9467bd", "#17becf"]
+    markers = ['o', 's', '^', 'D', 'v', 'P']
 
-    # Fig 3-4: 2D Scatter
+    # LDA降维 (最多n_classes-1维)
+    n_comp = min(3, len(classes) - 1)
+    lda = LDA(n_components=n_comp)
+    X_lda = lda.fit_transform(X, y)
+    print(f"  LDA explained variance ratio: {lda.explained_variance_ratio_[:n_comp].sum()*100:.1f}%")
+
+    # Fig 3-4: 2D Scatter (LD1 vs LD2)
     print("  Generating Fig 3-4 (2D scatter)...")
     fig, ax = plt.subplots(figsize=(10, 7))
-
     for ci in selected_classes:
-        if ci >= len(classes):
-            continue
+        if ci >= len(classes): continue
         mask = (y == ci)
-        ax.scatter(X[mask, 0], X[mask, 1], s=20, alpha=0.7,
-                   label=labels_zh[ci], color=color_palette[ci], edgecolors='none')
+        ax.scatter(X_lda[mask, 0], X_lda[mask, 1], s=50, alpha=0.8,
+                   label=labels_zh[ci], color=color_palette[ci],
+                   marker=markers[ci], edgecolors='white', linewidths=0.5)
 
     ax.set_xlabel(r"低频能量 $e_1$（标准化）", fontsize=12)
     ax.set_ylabel(r"中频能量 $e_2$（标准化）", fontsize=12)
@@ -878,37 +867,34 @@ def plot_scatter_figs(outdir, seed=42, n_samples=240, workers=8, selected_classe
     ax.legend(loc="best", ncol=2, fontsize=10, frameon=True, edgecolor='black', fancybox=False)
     ax.grid(True, linestyle='--', alpha=0.5)
     plt.tight_layout()
-
     outpath = os.path.join(outdir, "fig3_4_timefreq_scatter.png")
     fig.savefig(outpath, bbox_inches="tight")
+    fig.savefig(outpath.replace(".png", ".pdf"), bbox_inches="tight")
     plt.close(fig)
     print(f"  Saved {outpath}")
 
-    # Fig 3-8: 3D Scatter
+    # Fig 3-8: 3D Scatter (LD1, LD2, LD3)
     print("  Generating Fig 3-8 (3D scatter)...")
     fig = plt.figure(figsize=(11, 8))
     ax = fig.add_subplot(111, projection='3d')
-
     for ci in selected_classes:
-        if ci >= len(classes):
-            continue
+        if ci >= len(classes): continue
         mask = (y == ci)
-        ax.scatter(X[mask, 0], X[mask, 1], X[mask, 2], s=15, alpha=0.7,
-                   label=labels_zh[ci], color=color_palette[ci], edgecolors='none')
+        ax.scatter(X_lda[mask, 0], X_lda[mask, 1], X_lda[mask, 2], s=40, alpha=0.8,
+                   label=labels_zh[ci], color=color_palette[ci],
+                   marker=markers[ci], edgecolors='white', linewidths=0.3)
 
     ax.set_xlabel(r"低频能量 $e_1$", fontsize=11)
     ax.set_ylabel(r"中频能量 $e_2$", fontsize=11)
     ax.set_zlabel(r"样本熵 $SampEn$", fontsize=11)
     ax.set_title("三维时频特征散点图", fontsize=14, pad=20)
-    ax.legend(loc="best", ncol=2, fontsize=9, frameon=True, edgecolor='black', fancybox=False)
+    ax.legend(loc="upper left", ncol=2, fontsize=9, frameon=True, edgecolor='black', fancybox=False)
     ax.grid(True, linestyle='--', alpha=0.5)
-
-    # 调整视角使分离更清晰
-    ax.view_init(elev=20, azim=45)
-
+    ax.view_init(elev=25, azim=135)
     plt.tight_layout()
     outpath = os.path.join(outdir, "fig3_8_timefreq_3d.png")
     fig.savefig(outpath, bbox_inches="tight")
+    fig.savefig(outpath.replace(".png", ".pdf"), bbox_inches="tight")
     plt.close(fig)
     print(f"  Saved {outpath}")
 

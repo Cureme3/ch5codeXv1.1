@@ -165,7 +165,7 @@ def sample_state_at_time(sim: FaultSimResult, t_query: float) -> Tuple[float, np
     return float(sim.time[idx]), sim.states[idx].copy(), idx
 
 def _load_config() -> dict:
-    cfg_path = Path("configs") / "kz1a_params.yaml"
+    cfg_path = ROOT / "configs" / "kz1a_params.yaml"
     return yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
 
 def _estimate_fault_severity(scenario: FaultScenario) -> float:
