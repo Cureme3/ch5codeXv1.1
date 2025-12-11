@@ -20,19 +20,37 @@ gamma_air = 1.4
 R_air = 287.05287
 
 # --- 1. Revised Guidance Profiles ---
-# S1-S3 Open Loop Pitch Profile (Lofted trajectory strategy)
+# S1-S3 Open Loop Pitch Profile optimized for KZ-1A official flight profile
 # Time (s) -> Pitch Angle (deg, 90=Vertical, 0=Horizontal)
 # Note: Pitch is defined relative to local horizontal (Local-Level Frame)
+#
+# Official altitude profile targets:
+#   T+83s (S1 sep): 36 km
+#   T+161s (S2 sep): 105 km
+#   T+176s (Fairing): 120 km
+#   T+192s (S3 ign): 133.8 km
+#   T+284s (S3 sep): 245.5 km
+#   T+287s (S4 ign): 249.7 km
+#
+# Strategy: Flatter trajectory to reduce gravity loss and match altitude profile
 DEFAULT_PITCH_PROFILE: List[Tuple[float, float]] = [
-    (0.0, 90.000),    # Vertical launch
-    (10.0, 89.000),   # Kick start
-    (40.0, 67.000),   # S1 gravity turn start (Tuned)
-    (80.0, 54.000),   # S1 Sep approx
-    (120.0, 38.000),  # S2 Mid
-    (160.0, 30.000),  # S2 Sep approx
-    (200.0, 22.000),  # S3 Start
-    (250.0, 18.000),  # S3 Mid
-    (290.0, 14.000),  # S3 Sep (Precision Landing: 14.0 deg)
+    # Balanced pitch profile - moderate altitude with low vr
+    (0.0, 90.0),      # Vertical launch
+    (10.0, 84.0),     # Start turn slowly
+    (20.0, 76.0),     #
+    (40.0, 64.0),     #
+    (60.0, 54.0),     #
+    (83.0, 46.0),     # S1 sep (36 km)
+    (100.0, 40.0),    #
+    (120.0, 34.0),    #
+    (140.0, 28.0),    #
+    (161.0, 22.0),    # S2 sep (105 km)
+    (176.1, 18.0),    # Fairing jettison
+    (192.1, 14.0),    # S3 ignition (133.8 km)
+    (220.0, 9.0),     #
+    (250.0, 4.0),     #
+    (284.2, 1.0),     # S3 sep
+    (287.2, 1.0),     # S4 ignition
 ]
 
 # (Optional) Flight Path Angle Reference - mostly for analysis, pitch profile drives S1-S3
@@ -187,6 +205,9 @@ class KZ1AConfig:
     # VR feedback (S1-S3)
     use_fpa_vr_feedback: bool = True
     gamma_feedback_gain: float = 0.0  # Disable gamma FB, rely on pitch table
+
+    # Pitch profile for open-loop guidance (S1-S3)
+    pitch_profile: List[Tuple[float, float]] = None  # Will use DEFAULT_PITCH_PROFILE if None
     vr_feedback_gain: float = 0.0     # Disable VR FB, simple table is robust
     
     # Limits
@@ -204,36 +225,49 @@ class FaultProfile:
     sensor_bias_body: Optional[np.ndarray] = None
     noise_std: float = 0.0
     seed: int = 42
+    t_fault_s: float = 0.0  # 故障发生时刻，故障效果仅在 t >= t_fault_s 时生效
 
 
 def _kz1a_stage_baseline():
-    # S1
-    S1_total = 16600.0
-    S1_pm = 0.90 * S1_total
-    S1_Isp = 2352.0 / g0
-    S1_burn = 65.0
-    S1_thrust = (S1_pm / S1_burn) * S1_Isp * g0
+    """KZ-1A stage parameters based on official user manual data.
 
-    # S2
-    S2_total = 8686.0
-    S2_pm = 0.90 * S2_total
-    S2_Isp = 2810.0 / g0
-    S2_burn = 62.0
-    S2_thrust = (S2_pm / S2_burn) * S2_Isp * g0
+    Data sources:
+    - Total masses: KZ-1A User Manual (S1=16621kg, S2=8686kg, S3=3183kg)
+    - Isp values: User Manual (S1=2352m/s, S2=2810m/s, S3=2850m/s)
+    - Burn times: User Manual (S1=65s, S2=62s, S3=55s, S4=765s)
+    - S1 thrust: ~590kN (official), using 541kN (calculated from mass ratio 0.90)
+    - Mass ratio: 0.90 for solid stages (typical), 0.75 for S4 liquid stage
+    - S4 Isp: 310s (typical liquid upper stage)
+    - Payload capacity: 390kg to 500km LEO
+    """
+    # S1: First stage (solid)
+    S1_total = 16621.0  # kg (official)
+    S1_pm = 0.90 * S1_total  # 14959 kg propellant
+    S1_Isp = 2352.0 / g0  # 240 s
+    S1_burn = 65.0  # s (official)
+    S1_thrust = (S1_pm / S1_burn) * S1_Isp * g0  # ~541 kN
 
-    # S3
-    S3_total = 3183.0
-    S3_pm = 0.90 * S3_total
-    S3_Isp = 2850.0 / g0
-    S3_burn = 55.0
-    S3_thrust = (S3_pm / S3_burn) * S3_Isp * g0
+    # S2: Second stage (solid)
+    S2_total = 8686.0  # kg (official)
+    S2_pm = 0.90 * S2_total  # 7817 kg propellant
+    S2_Isp = 2810.0 / g0  # 287 s
+    S2_burn = 62.0  # s (official)
+    S2_thrust = (S2_pm / S2_burn) * S2_Isp * g0  # ~354 kN
 
-    # S4 (Long burn, low thrust)
-    S4_total = 1300.0
-    S4_pm = 1000.0
-    S4_Isp = 3050.0 / g0  # ~311 s
-    S4_burn_nominal = 765.0 # Max duration
-    S4_thrust = (S4_pm / S4_burn_nominal) * S4_Isp * g0
+    # S3: Third stage (solid)
+    S3_total = 3183.0  # kg (official)
+    S3_pm = 0.90 * S3_total  # 2865 kg propellant
+    S3_Isp = 2850.0 / g0  # 291 s
+    S3_burn = 55.0  # s (official)
+    S3_thrust = (S3_pm / S3_burn) * S3_Isp * g0  # ~148 kN
+
+    # S4: Fourth stage (MMH/N2O4 liquid upper stage)
+    # 优化参数: 比冲320s, 质量分数88%
+    S4_total = 1800.0  # kg
+    S4_pm = 0.88 * S4_total  # 1584 kg propellant
+    S4_Isp = 320.0  # s (MMH/N2O4 typical vacuum Isp)
+    S4_thrust = 25000.0  # N (increased for lower gravity loss)
+    S4_burn_nominal = S4_pm * S4_Isp * g0 / S4_thrust  # ~219 s
 
     return [
         ("S1", S1_total, S1_pm, S1_Isp, S1_burn, S1_thrust, 1.4),
@@ -246,18 +280,31 @@ def _kz1a_stage_baseline():
 def build_timeline_kz1a(
     cfg: KZ1AConfig, event_delay: Optional[Dict[str, float]] = None
 ) -> Tuple[List[KZ1AStage], Dict[str, float]]:
-    """Construct unified KZ-1A stage objects and event times."""
-    # Typical Event Schedule
+    """Construct unified KZ-1A stage objects and event times.
+
+    Event timeline based on official KZ-1A User Manual flight profile:
+    - 1st stage ignition: T+0.0s
+    - 1st stage separation: T+83.0s (altitude ~36km)
+    - 2nd stage separation: T+161.0s (altitude ~105km)
+    - Fairing jettison: T+176.1s (altitude ~120km)
+    - 3rd stage ignition: T+192.1s (altitude ~133.8km)
+    - 3rd stage separation: T+284.2s (altitude ~245.5km)
+    - 4th stage ignition: T+287.2s (altitude ~249.7km)
+    - 4th stage shutdown: T+1052.2s (altitude ~700.3km)
+    - SC/LV separation: T+1060.2s
+    """
+    # Official Event Schedule from KZ-1A User Manual
     events = {
         "S1_ign": 0.0,
         "S1_sep": 83.0,
-        "S2_ign": 85.0,
+        "S2_ign": 85.0,  # 2s coast after S1 sep
         "S2_sep": 161.0,
         "Fairing_jettison": 176.1,
         "S3_ign": 192.1,
         "S3_sep": 284.2,
         "S4_ign": 287.2,
-        "SC_sep": 1150.0, # Placeholder, will be triggered after MECO
+        "S4_cutoff": 1052.2,  # Official shutdown time
+        "SC_sep": 1060.2,
     }
     
     if event_delay:
@@ -361,79 +408,110 @@ def build_dir_from_pitch(er: np.ndarray, e_tan: np.ndarray, pitch_deg: float) ->
     return u / max(np.linalg.norm(u), 1e-9)
 
 
+def interp_profile(t: float, profile: List[Tuple[float, float]]) -> float:
+    """Linear interpolation on a (time, value) profile."""
+    if t <= profile[0][0]:
+        return profile[0][1]
+    if t >= profile[-1][0]:
+        return profile[-1][1]
+    for i in range(len(profile) - 1):
+        t0, v0 = profile[i]
+        t1, v1 = profile[i + 1]
+        if t0 <= t <= t1:
+            return v0 + (v1 - v0) * (t - t0) / (t1 - t0)
+    return profile[-1][1]
+
+
 def s4_guidance_logic(
-    r: np.ndarray, 
-    v: np.ndarray, 
-    cfg: KZ1AConfig, 
-    t: float, 
-    s4_ign_t: float
-) -> Tuple[np.ndarray, float, str]:
+    r: np.ndarray,
+    v: np.ndarray,
+    cfg: KZ1AConfig,
+    t: float,
+    s4_ign_t: float,
+    s4_state: dict = None
+) -> Tuple[np.ndarray, float, str, dict]:
     """
-    Closed-loop guidance for S4 to circularize at target altitude.
-    Uses Cascaded Control: Altitude -> Target Vr -> Pitch.
-    User Feedback Iteration: Precision Landing (Tuned S3 + Strict Vr).
+    S4 two-burn Hohmann-like guidance for 500km circular orbit.
+
+    BURN1: Raise apoapsis to target altitude (burn prograde)
+    COAST: Coast to apoapsis (vr crosses zero from positive to negative)
+    BURN2: Circularize at apoapsis (burn prograde until circular)
     """
-    # Current state
     r_norm = np.linalg.norm(r)
     h = r_norm - Re
-    v_norm = np.linalg.norm(v)
     er = r / max(r_norm, 1e-9)
     vr = np.dot(v, er)
-    
-    # Flight Path Angle (Gamma)
-    sin_gamma = np.clip(vr / max(v_norm, 1e-9), -1.0, 1.0)
-    gamma_deg = math.degrees(math.asin(sin_gamma))
-    
-    # Reference Frame
+    v_norm = np.linalg.norm(v)
+
     _, e_tan, _ = local_level_axes(r, v)
-    
-    # --- Guidance Strategy: Cascaded Control ---
-    
     orb = estimate_orbit_from_state(r, v)
-    sma_err = (Re + cfg.target_circ_alt_m) - orb["a_m"]
-    
-    # Outer Loop: Altitude Error -> Target Radial Velocity (Vr_cmd)
-    h_err = cfg.target_alt_m - h # Positive if low
-    
-    # Terminal Phase Logic (Force Flat Insertion)
-    # Trigger if we are close to target altitude OR close to target energy
-    
-    close_to_alt = abs(h_err) < 5000.0 # Within 5km
-    close_to_energy = sma_err < 30e3   # Within 30km SMA
-    
-    if close_to_alt or close_to_energy: 
-        # TERMINAL LOCK: Force Vr to 0
-        vr_cmd = 0.0
-        k_vr = 4.0 # Extreme gain to kill Vr instantly
-        status_prefix = "S4_LOCK"
-    else:
-        # Normal Phase (Climb)
-        k_alt = 2.200 # Slightly increased (was 2.000)
-        vr_cmd = k_alt * (h_err / 1000.0)
-        vr_cmd = max(-50.0, min(300.0, vr_cmd)) 
-        k_vr = 0.600 
-        status_prefix = "S4_CL"
-        
-    # Inner Loop: Vr Error -> Pitch Command
-    vr_err = vr_cmd - vr # Positive if we need more climb rate
-    pitch_cmd = k_vr * vr_err
-    
-    # Clamp Pitch
-    max_pitch = 45.0
-    min_pitch = -20.0 
-    
-    # Force Logic: Don't pitch down if low (unless in LOCK mode)
-    if h < 480e3 and status_prefix != "S4_LOCK":
-        min_pitch = 0.0
-        
-    pitch_cmd = max(min_pitch, min(max_pitch, pitch_cmd))
-    
-    # Compute direction vector
+    ecc = orb["e"]
+    sma = orb["a_m"]
+    ha = sma * (1 + ecc) - Re  # Apoapsis altitude
+
+    h_target = cfg.target_circ_alt_m
+    r_target = Re + h_target
+
+    if s4_state is None:
+        s4_state = {"phase": "BURN1", "burn": True, "prev_vr": vr}
+
+    phase = s4_state["phase"]
+    burn = False
+    pitch_cmd = 0.0
+
+    if phase == "BURN1":
+        # Raise apoapsis to target - burn prograde (horizontal)
+        burn = True
+        pitch_cmd = -vr / 30.0  # Small vr damping to stay near-horizontal
+        pitch_cmd = max(-5.0, min(5.0, pitch_cmd))
+
+        # Transition when apoapsis reaches target (account for overshoot)
+        if ha >= h_target - 10e3:
+            s4_state["phase"] = "COAST"
+            s4_state["prev_vr"] = vr
+            burn = False
+
+    elif phase == "COAST":
+        # Coast to apoapsis - wait until near apoapsis altitude with small vr
+        burn = False
+        pitch_cmd = 0.0
+
+        prev_vr = s4_state.get("prev_vr", vr)
+        # At apoapsis: altitude near target AND vr crosses from positive to negative
+        near_apoapsis_alt = h > h_target * 0.95
+        vr_crossing_down = prev_vr > 0 and vr <= 0
+        at_apoapsis = near_apoapsis_alt and vr_crossing_down
+        s4_state["prev_vr"] = vr
+
+        if at_apoapsis:
+            s4_state["phase"] = "BURN2"
+
+    elif phase == "BURN2":
+        # Circularize at apoapsis - burn prograde
+        burn = True
+        # Target circular velocity at current altitude
+        v_circ = math.sqrt(mu / r_norm)
+        v_err = v_circ - v_norm
+
+        # Burn prograde (horizontal) with small vr correction
+        pitch_cmd = -vr / 10.0
+        pitch_cmd = max(-10.0, min(10.0, pitch_cmd))
+
+        # Stop when velocity matches circular (within 2 m/s)
+        if v_err < 2.0:
+            s4_state["phase"] = "DONE"
+            burn = False
+
+    elif phase == "DONE":
+        burn = False
+        pitch_cmd = 0.0
+
+    s4_state["burn"] = burn
     u_cmd = build_dir_from_pitch(er, e_tan, pitch_cmd)
-    
-    status = f"{status_prefix}: h={h/1000:.1f}km, vr_cmd={vr_cmd:.1f}, vr={vr:.1f}, P={pitch_cmd:.1f}"
-    
-    return u_cmd, pitch_cmd, status
+
+    status = f"S4_{phase}: h={h/1000:.1f}km, vr={vr:.0f}m/s, ha={ha/1000:.0f}km, e={ecc:.4f}"
+
+    return u_cmd, pitch_cmd, status, s4_state
 
 
 def orbital_metrics(r: np.ndarray, v: np.ndarray, mu_val: float):
@@ -591,7 +669,8 @@ def simulate_kz1a_eci(
     fairing_off = False
     s4_burn_on = False
     s4_ign_time = None
-    
+    s4_state = None  # Two-burn guidance state
+
     tvc_prev = None
     rng = np.random.default_rng(fault.seed)
 
@@ -620,43 +699,13 @@ def simulate_kz1a_eci(
                 state[6] = max(1.0, state[6] - dry_left[i])
                 dry_left[i] = 0.0
                 
-        # 2. S4 Logic (Ignition & MECO)
+        # 2. S4 Logic (Ignition)
         if curr_stg.name == "S4":
             # Ignition
-            if (not s4_burn_on) and t >= events["S4_ign"] and prop_left[stage_idx] > 0:
-                s4_burn_on = True
+            if s4_ign_time is None and t >= events["S4_ign"] and prop_left[stage_idx] > 0:
                 s4_ign_time = t
-            
-            # MECO Logic (Only check if burning)
-            if s4_burn_on:
-                burn_duration = t - s4_ign_time
-                orb = estimate_orbit_from_state(state[0:3], state[3:6])
-                sma_err = abs((orb["a_m"] - Re) - cfg.target_circ_alt_m)
-                
-                # Conditions
-                cond_time = burn_duration >= cfg.s4_meco_min_burn_s
-                
-                # Robust MECO: Check Semi-Major Axis (Energy) ONLY
-                # We want a ~= target_alt + Re
-                
-                sma_target = Re + cfg.target_circ_alt_m
-                sma_current = orb["a_m"]
-                
-                # Stop if we have enough energy (SMA >= Target)
-                # We trust the guidance to have circularized by now.
-                # If we wait for e < 0.005, we might overshoot SMA significantly if guidance is imperfect.
-                
-                have_energy = sma_current >= sma_target
-                
-                # Safety cutoff if we overshoot altitude too much
-                overshoot = sma_current > (sma_target + 5e3) 
-                
-                # Note: We relax the min burn time constraint if we are clearly overshooting
-                if (cond_time and have_energy) or overshoot:
-                    s4_burn_on = False
-                    events["S4_cutoff"] = t
-                    # Update stage end time so 'burning' flag works
-                    curr_stg.end_time_s = t
+                s4_state = {"phase": "BURN1", "burn": True, "prev_vr": 0.0}
+                s4_burn_on = True
         
         # 3. Thrust & MDOT
         burning = False
@@ -671,7 +720,11 @@ def simulate_kz1a_eci(
                 burning = True
         
         if burning:
-            thrust_scale = 1.0 - fault.thrust_drop
+            # 故障效果仅在 t >= t_fault_s 时生效
+            if t >= fault.t_fault_s:
+                thrust_scale = 1.0 - fault.thrust_drop
+            else:
+                thrust_scale = 1.0
             thrust_mag = curr_stg.thrust_N * thrust_scale
             mdot = curr_stg.prop_mass_kg / curr_stg.burn_time_s
             # Clip if near empty
@@ -682,19 +735,26 @@ def simulate_kz1a_eci(
         # 4. Guidance (Direction)
         pitch_cmd_deg = 0.0
         u_des = np.array([1.0, 0.0, 0.0])
-        
-        if curr_stg.name == "S4":
-            # Closed Loop S4
-            ref_t = s4_ign_time if s4_ign_time else events["S4_ign"]
-            u_des, pitch_cmd_deg, _ = s4_guidance_logic(state[0:3], state[3:6], cfg, t, ref_t)
+
+        # S1-S3: 开环俯仰角剖面; S4: 闭环制导
+        r_now = state[0:3]
+        v_now = state[3:6]
+        er, e_tan, _ = local_level_axes(r_now, v_now)
+
+        if s4_state is not None:
+            # S4两次点火制导
+            u_des, pitch_cmd_deg, _, s4_state = s4_guidance_logic(
+                r_now, v_now, cfg, t, events.get("S4_ign", 287.2), s4_state
+            )
+            # Update burn flag from guidance
+            s4_burn_on = s4_state.get("burn", False) and prop_left[stage_idx] > 0
+            # Check for MECO (DONE phase)
+            if s4_state.get("phase") == "DONE" and events.get("S4_cutoff", 99999) > t:
+                events["S4_cutoff"] = t
         else:
-            # Open Loop S1-S3
-            pitch_cmd_deg = pitch_cmd_deg_open_loop(t, cfg)
-            er, e_east, e_north = local_level_axes(state[0:3], state[3:6])
-            # For S1-S3, pitch is usually in the orbital plane (e_east approx)
-            # We assume launch azimuth is roughly handled by initial velocity/setup
-            # Simplified: Pitch in the (er, e_tan) plane
-            _, e_tan, _ = local_level_axes(state[0:3], state[3:6])
+            # S1-S3开环制导：按俯仰角剖面
+            profile = cfg.pitch_profile if cfg.pitch_profile else DEFAULT_PITCH_PROFILE
+            pitch_cmd_deg = interp_profile(t, profile)
             u_des = build_dir_from_pitch(er, e_tan, pitch_cmd_deg)
 
         # 5. Dynamics Step
