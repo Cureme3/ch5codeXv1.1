@@ -81,7 +81,8 @@
       "Bash(npm install:*)",
       "Bash(sudo npm install:*)",
       "Bash(PYTHONDONTWRITEBYTECODE=1 /mnt/d/Users/anaconda3/envs/chap3/python.exe:*)",
-      "Bash(rm:*)"
+      "Bash(rm:*)",
+      "Bash(xargs:*)"
     ],
     "deny": [],
     "ask": []

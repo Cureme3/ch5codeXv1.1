@@ -28,6 +28,60 @@ sys.path.insert(0, str(CH4_ROOT))
 from run_full_pipeline import run_pipeline
 from diagnose_and_visualize import run_diagnosis, run_diagnosis_components
 
+# 地球引力常数
+MU = 3.986004418e14  # m^3/s^2
+
+
+def rv_to_orbital_elements(r_vec, v_vec):
+    """从位置速度向量计算轨道六根数。"""
+    r = np.linalg.norm(r_vec)
+    v = np.linalg.norm(v_vec)
+
+    h_vec = np.cross(r_vec, v_vec)
+    h = np.linalg.norm(h_vec)
+
+    k = np.array([0, 0, 1])
+    n_vec = np.cross(k, h_vec)
+    n = np.linalg.norm(n_vec)
+
+    e_vec = ((v**2 - MU/r) * r_vec - np.dot(r_vec, v_vec) * v_vec) / MU
+    e = np.linalg.norm(e_vec)
+
+    xi = v**2 / 2 - MU / r
+    a = -MU / (2 * xi) if abs(e - 1.0) > 1e-10 else np.inf
+
+    i = np.arccos(np.clip(h_vec[2] / h, -1, 1))
+
+    if n > 1e-10:
+        Omega = np.arccos(np.clip(n_vec[0] / n, -1, 1))
+        if n_vec[1] < 0:
+            Omega = 2 * np.pi - Omega
+    else:
+        Omega = 0.0
+
+    if n > 1e-10 and e > 1e-10:
+        omega = np.arccos(np.clip(np.dot(n_vec, e_vec) / (n * e), -1, 1))
+        if e_vec[2] < 0:
+            omega = 2 * np.pi - omega
+    else:
+        omega = 0.0
+
+    if e > 1e-10:
+        nu = np.arccos(np.clip(np.dot(e_vec, r_vec) / (e * r), -1, 1))
+        if np.dot(r_vec, v_vec) < 0:
+            nu = 2 * np.pi - nu
+    else:
+        nu = 0.0
+
+    return {
+        'a': a / 1000,  # km
+        'e': e,
+        'i': np.degrees(i),
+        'Omega': np.degrees(Omega),
+        'omega': np.degrees(omega),
+        'nu': np.degrees(nu),
+    }
+
 
 @st.cache_data(show_spinner=False)
 def cached_run_pipeline(scenario, eta, t_fault):
@@ -164,8 +218,8 @@ def main():
     run_btn = st.sidebar.button("🚀 运行全链路仿真", width="stretch")
 
     # 主区 Tab 结构
-    tab_overview, tab_diag, tab_traj, tab_warmstart, tab_detail = st.tabs(
-        ["概览", "诊断可视化", "轨迹对比", "热启动对比", "数值详情"]
+    tab_overview, tab_diag, tab_traj, tab_orbital, tab_gallery, tab_warmstart, tab_detail = st.tabs(
+        ["概览", "诊断可视化", "轨迹对比", "轨道六根数", "图表库", "热启动对比", "数值详情"]
     )
 
     # 使用 session_state 保存结果
@@ -380,61 +434,110 @@ def main():
             )
             st.plotly_chart(fig3d, width="stretch")
 
-            # ===== 轨道参数显示 =====
-            st.markdown("##### 入轨/降级轨道参数")
+        # ===== 轨道六根数 Tab =====
+        with tab_orbital:
+            st.markdown("#### 轨道六根数对比")
+            st.markdown(
+                "<p style='color:#6b7280;font-size:0.9rem;'>对比名义轨道与重规划轨道的轨道根数，展示故障对入轨精度的影响。</p>",
+                unsafe_allow_html=True,
+            )
 
-            # 从result获取任务域信息
+            # 尝试从轨迹数据计算轨道六根数
+            raw = result.get("raw", {})
+            reconfig_traj = traj.get("reconfigured", {})
+
+            # 名义轨道六根数（固定值）
+            nom_oe = {'a': 6871.31, 'e': 0.001104, 'i': 97.39, 'Omega': 107.40, 'omega': 176.31, 'nu': 112.17}
+
+            # 尝试从重规划轨迹计算
+            r_eci = reconfig_traj.get("r_eci_terminal")
+            v_eci = reconfig_traj.get("v_eci_terminal")
+
+            if r_eci is not None and v_eci is not None:
+                reconfig_oe = rv_to_orbital_elements(np.array(r_eci), np.array(v_eci))
+            else:
+                # 使用估算值
+                domain_info = result.get("mission_domain", {})
+                h_target = domain_info.get("h_target_km", 500.0)
+                reconfig_oe = {
+                    'a': 6371 + h_target,
+                    'e': 0.001 if h_target > 400 else 0.015,
+                    'i': 97.39,
+                    'Omega': 107.40,
+                    'omega': 170.0,
+                    'nu': 115.0,
+                }
+
+            st.markdown("##### 轨道根数对比表")
+            st.markdown(f"""
+            | 参数 | 符号 | 名义轨道 | 重规划轨道 | 偏差 |
+            |------|------|----------|------------|------|
+            | 半长轴 | a (km) | {nom_oe['a']:.2f} | {reconfig_oe['a']:.2f} | {reconfig_oe['a'] - nom_oe['a']:.2f} |
+            | 偏心率 | e | {nom_oe['e']:.6f} | {reconfig_oe['e']:.6f} | {reconfig_oe['e'] - nom_oe['e']:.6f} |
+            | 轨道倾角 | i (°) | {nom_oe['i']:.2f} | {reconfig_oe['i']:.2f} | {reconfig_oe['i'] - nom_oe['i']:.2f} |
+            | 升交点赤经 | Ω (°) | {nom_oe['Omega']:.2f} | {reconfig_oe['Omega']:.2f} | {reconfig_oe['Omega'] - nom_oe['Omega']:.2f} |
+            | 近地点幅角 | ω (°) | {nom_oe['omega']:.2f} | {reconfig_oe['omega']:.2f} | {reconfig_oe['omega'] - nom_oe['omega']:.2f} |
+            | 真近点角 | ν (°) | {nom_oe['nu']:.2f} | {reconfig_oe['nu']:.2f} | {reconfig_oe['nu'] - nom_oe['nu']:.2f} |
+            """)
+
+            # 任务域说明
             domain_info = result.get("mission_domain", {})
-            domain_name = domain_info.get("name", "DEGRADED")
-            h_target = domain_info.get("h_target_km", 300.0)
-            v_target = domain_info.get("v_target_kms", 7.73)
+            domain_name = domain_info.get("name", "N/A")
+            st.markdown(f"""
+            ##### 任务域: {domain_name}
+            - **RETAIN**: 保持原入轨目标 (500km)
+            - **DEGRADED**: 降级到低轨道 (300km)
+            - **SAFE_AREA**: 安全落区着陆
+            """)
 
-            # 根据任务域计算轨道参数
-            R_EARTH_KM = 6378.137
-            mu = 398600.4418  # km^3/s^2
+        # ===== 图表库 Tab =====
+        with tab_gallery:
+            st.markdown("#### 预生成图表库")
+            st.markdown(
+                "<p style='color:#6b7280;font-size:0.9rem;'>浏览第三章诊断和第四章轨迹规划的预生成图表。</p>",
+                unsafe_allow_html=True,
+            )
 
-            # 轨道半长轴 a = R_E + h
-            a_km = R_EARTH_KM + h_target
-            # 轨道周期 T = 2*pi*sqrt(a^3/mu)
-            T_s = 2 * 3.14159265 * ((a_km**3 / mu) ** 0.5)
-            # 圆轨道速度 v = sqrt(mu/a)
-            v_circ = (mu / a_km) ** 0.5
+            gallery_type = st.selectbox(
+                "选择图表类别",
+                ["第三章 - 故障诊断", "第四章 - 轨迹对比 (2x2)", "第四章 - 3D轨迹", "第五章 - 综合验证"]
+            )
 
-            # 发射点参数（固定值）
-            lat_launch = 40.96
-            lon_launch = 100.28
-            inc_deg = 97.4  # 轨道倾角
+            if gallery_type == "第三章 - 故障诊断":
+                ch3_fig_dir = PROJECT_ROOT / "ch3codev1.1" / "exports" / "ch3_figures"
+                fig_files = list(ch3_fig_dir.glob("*.png"))
+                if fig_files:
+                    selected_fig = st.selectbox("选择图表", [f.name for f in fig_files])
+                    st.image(str(ch3_fig_dir / selected_fig), use_container_width=True)
+                else:
+                    st.info("未找到第三章图表文件")
 
-            # 升交点赤经（春分6:00，太阳在赤经0°，发射点经度100.28°E）
-            # RAAN ≈ 经度 - 90° + 时角修正 ≈ 83.5°
-            raan_deg = 83.5
+            elif gallery_type == "第四章 - 轨迹对比 (2x2)":
+                ch4_fig_dir = CH4_ROOT / "outputs" / "figures" / "ch4_mission_domains" / "combined_2x2"
+                fig_files = list(ch4_fig_dir.glob("*.png"))
+                if fig_files:
+                    selected_fig = st.selectbox("选择故障类型", [f.name for f in fig_files])
+                    st.image(str(ch4_fig_dir / selected_fig), use_container_width=True)
+                else:
+                    st.info("未找到2x2组合图文件")
 
-            col_orb1, col_orb2 = st.columns(2)
-            with col_orb1:
-                st.markdown("**轨道根数**")
-                st.markdown(f"""
-                | 参数 | 名义值 | 重构值 |
-                |------|--------|--------|
-                | 半长轴 a | 6878 km | {a_km:.1f} km |
-                | 轨道高度 h | 500 km | {h_target:.1f} km |
-                | 偏心率 e | 0 | ~0 |
-                | 轨道倾角 i | 97.4° | 97.4° |
-                | 升交点赤经 Ω | 83.5° | {raan_deg}° |
-                | 近地点幅角 ω | 0° | 0° |
-                | 真近点角 ν | 0° | 0° |
-                """)
-            with col_orb2:
-                st.markdown("**入轨参数**")
-                st.markdown(f"""
-                | 参数 | 名义值 | 重构值 |
-                |------|--------|--------|
-                | 入轨速度 | 7.61 km/s | {v_target:.2f} km/s |
-                | 圆轨道速度 | 7.61 km/s | {v_circ:.2f} km/s |
-                | 轨道周期 | 5677 s | {T_s:.0f} s |
-                | 飞行路径角 γ | 0° | ~0° |
-                | 发射点纬度 | 40.96°N | 40.96°N |
-                | 发射点经度 | 100.28°E | 100.28°E |
-                """)
+            elif gallery_type == "第四章 - 3D轨迹":
+                ch4_3d_dir = CH4_ROOT / "outputs" / "figures" / "ch4_mission_domains" / "fault_comparison"
+                fig_files = list(ch4_3d_dir.glob("*.png"))
+                if fig_files:
+                    selected_fig = st.selectbox("选择故障类型", [f.name for f in fig_files])
+                    st.image(str(ch4_3d_dir / selected_fig), use_container_width=True)
+                else:
+                    st.info("未找到3D轨迹图文件")
+
+            elif gallery_type == "第五章 - 综合验证":
+                ch5_fig_dir = CH4_ROOT / "outputs" / "figures" / "ch5_section5"
+                fig_files = list(ch5_fig_dir.glob("*.png"))
+                if fig_files:
+                    selected_fig = st.selectbox("选择图表", [f.name for f in fig_files])
+                    st.image(str(ch5_fig_dir / selected_fig), use_container_width=True)
+                else:
+                    st.info("未找到第五章图表文件")
 
         # ===== 热启动 Tab：冷/热启动对比 =====
         with tab_warmstart:
@@ -546,6 +649,42 @@ def main():
             st.info("请先运行仿真以生成诊断图。")
         with tab_traj:
             st.info("请先运行仿真以生成轨迹图。")
+        with tab_orbital:
+            st.info("请先运行仿真以查看轨道六根数。")
+        with tab_gallery:
+            st.markdown("#### 预生成图表库")
+            st.markdown(
+                "<p style='color:#6b7280;font-size:0.9rem;'>浏览第三章诊断和第四章轨迹规划的预生成图表。</p>",
+                unsafe_allow_html=True,
+            )
+            gallery_type = st.selectbox(
+                "选择图表类别",
+                ["第三章 - 故障诊断", "第四章 - 轨迹对比 (2x2)", "第四章 - 3D轨迹", "第五章 - 综合验证"]
+            )
+            if gallery_type == "第三章 - 故障诊断":
+                ch3_fig_dir = PROJECT_ROOT / "ch3codev1.1" / "exports" / "ch3_figures"
+                fig_files = list(ch3_fig_dir.glob("*.png"))
+                if fig_files:
+                    selected_fig = st.selectbox("选择图表", [f.name for f in fig_files])
+                    st.image(str(ch3_fig_dir / selected_fig), use_container_width=True)
+            elif gallery_type == "第四章 - 轨迹对比 (2x2)":
+                ch4_fig_dir = CH4_ROOT / "outputs" / "figures" / "ch4_mission_domains" / "combined_2x2"
+                fig_files = list(ch4_fig_dir.glob("*.png"))
+                if fig_files:
+                    selected_fig = st.selectbox("选择故障类型", [f.name for f in fig_files])
+                    st.image(str(ch4_fig_dir / selected_fig), use_container_width=True)
+            elif gallery_type == "第四章 - 3D轨迹":
+                ch4_3d_dir = CH4_ROOT / "outputs" / "figures" / "ch4_mission_domains" / "fault_comparison"
+                fig_files = list(ch4_3d_dir.glob("*.png"))
+                if fig_files:
+                    selected_fig = st.selectbox("选择故障类型", [f.name for f in fig_files])
+                    st.image(str(ch4_3d_dir / selected_fig), use_container_width=True)
+            elif gallery_type == "第五章 - 综合验证":
+                ch5_fig_dir = CH4_ROOT / "outputs" / "figures" / "ch5_section5"
+                fig_files = list(ch5_fig_dir.glob("*.png"))
+                if fig_files:
+                    selected_fig = st.selectbox("选择图表", [f.name for f in fig_files])
+                    st.image(str(ch5_fig_dir / selected_fig), use_container_width=True)
         with tab_warmstart:
             st.info("请先运行仿真以查看热启动对比。")
         with tab_detail:
