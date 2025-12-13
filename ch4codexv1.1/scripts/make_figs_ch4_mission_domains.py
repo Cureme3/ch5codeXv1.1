@@ -6,11 +6,19 @@
 - 图4-22：retain 域下若干故障的关键量响应（从真实 replan 结果中选取）
 - 图4-23：选择一个代表性故障（F1 severe，η=0.8），对比不同任务域下终端行距或轨迹差异
 - 图4-24：五种严重故障的终端行距统计汇总
+- ECI 3D轨迹图：展示各故障场景在ECI坐标系下的三维轨迹
+
+适配4000s仿真时长（霍曼转移入轨）：
+- S4点火: ~287s
+- BURN1: 抬升远地点到500km
+- COAST: 滑行到远地点 (~2700s)
+- BURN2: 远地点圆化 (~3500s)
 
 输出文件：
 - outputs/figures/ch4_mission_domains/fig4_22_retain_domain_responses.png/.pdf
 - outputs/figures/ch4_mission_domains/fig4_23_f1_severe_downrange.png/.pdf
 - outputs/figures/ch4_mission_domains/fig4_24_severe_downrange_summary.png/.pdf
+- outputs/figures/ch4_mission_domains/fig4_3d_*_trajectory.png/.pdf
 
 命令行用法：
     python -m scripts.make_figs_ch4_mission_domains
@@ -25,6 +33,10 @@ from dataclasses import dataclass
 
 import matplotlib
 matplotlib.use('Agg')
+# 在导入pyplot之前设置字体
+matplotlib.rcParams['font.family'] = 'serif'
+matplotlib.rcParams['font.serif'] = ['SimSun', 'Times New Roman', 'SimHei']
+matplotlib.rcParams['axes.unicode_minus'] = False
 import matplotlib.pyplot as plt
 import numpy as np
 
@@ -66,7 +78,7 @@ DOMAIN_COLORS = {
 
 @dataclass
 class TrajectoryData:
-    """轨迹数据。"""
+    """轨迹数据（支持4000s仿真和ECI坐标）。"""
     t: np.ndarray
     downrange: np.ndarray
     altitude: np.ndarray
@@ -76,6 +88,9 @@ class TrajectoryData:
     fault_type: str = ""
     t_fault: float = 0.0
     t_confirm: float = 0.0
+    # ECI坐标数据（可选）
+    r_eci: np.ndarray = None  # (N, 3) 位置向量 [m]
+    v_eci: np.ndarray = None  # (N, 3) 速度向量 [m/s]
 
 
 def save_figure(fig: plt.Figure, filepath: Path) -> None:
@@ -88,7 +103,7 @@ def save_figure(fig: plt.Figure, filepath: Path) -> None:
 
 
 def load_trajectory_npz(file_path: Path) -> Optional[TrajectoryData]:
-    """加载轨迹数据。"""
+    """加载轨迹数据（支持ECI坐标）。"""
     if not file_path.exists():
         return None
 
@@ -100,6 +115,10 @@ def load_trajectory_npz(file_path: Path) -> Optional[TrajectoryData]:
     if len(t) == 0 or len(downrange) == 0 or len(altitude) == 0:
         return None
 
+    # 加载ECI数据（如果存在）
+    r_eci = data.get('r_eci', None)
+    v_eci = data.get('v_eci', None)
+
     return TrajectoryData(
         t=t,
         downrange=downrange,
@@ -110,20 +129,22 @@ def load_trajectory_npz(file_path: Path) -> Optional[TrajectoryData]:
         fault_type=str(data.get('fault_type', '')),
         t_fault=float(data.get('t_fault', 0.0)),
         t_confirm=float(data.get('t_confirm', 0.0)),
+        r_eci=r_eci,
+        v_eci=v_eci,
     )
 
 
 def determine_mission_domain(eta: float) -> str:
-    """根据 eta 值判定任务域。
+    """根据 eta 值判定任务域（基于能量分析校准）。
 
-    规则：
-    - eta < 0.3: RETAIN
-    - 0.3 <= eta < 0.7: DEGRADED
-    - eta >= 0.7: SAFE_AREA
+    规则（基于KZ-1A能量分析）：
+    - eta < 0.44 (推力损失 < 8.8%): RETAIN - 500km圆轨道
+    - 0.44 <= eta < 0.95 (推力损失8.8-19%): DEGRADED - 200x400km椭圆轨道
+    - eta >= 0.95 (推力损失 >= 19%): SAFE_AREA - 安全着陆
     """
-    if eta < 0.3:
+    if eta < 0.44:
         return "RETAIN"
-    elif eta < 0.7:
+    elif eta < 0.95:
         return "DEGRADED"
     else:
         return "SAFE_AREA"
@@ -386,114 +407,106 @@ def make_3d_trajectory_plot(
     all_data: Dict,
     out_dir: Path,
 ) -> None:
-    """生成单个故障场景的3D轨迹图。
+    """生成单个故障场景的ECI 3D轨迹图。
 
-    使用 (时间, 地面行距, 高度) 三维坐标系展示轨迹。
-    包含：名义轨迹、故障开环轨迹、重规划轨迹、轨道高度参考线。
+    使用ECI坐标系展示轨迹（如果有ECI数据），否则使用 (时间, 地面行距, 高度)。
+    包含：名义轨迹、故障开环轨迹、重规划轨迹、地球参考球。
     """
     from mpl_toolkits.mplot3d import Axes3D
 
-    fig = plt.figure(figsize=(12, 9))
+    fig = plt.figure(figsize=(12, 10))
     ax = fig.add_subplot(111, projection='3d')
 
-    # 轨道高度参考值 (km)
-    ORBIT_HEIGHTS = {
-        "RETAIN": 500,      # 保持任务轨道高度
-        "DEGRADED": 300,    # 降级任务轨道高度
-        "SAFE_AREA": 0,     # 安全区（地面）
-    }
+    # 地球半径 (km)
+    R_EARTH_KM = 6371.0
 
-    # 加载名义轨迹
+    # 检查是否有ECI数据
     nominal = all_data.get("nominal", {}).get(0.0, (None, None))[0]
-    if nominal is not None:
-        ax.plot(
-            nominal.t, nominal.downrange, nominal.altitude,
-            'b-', linewidth=2, label="名义轨迹", alpha=0.8
-        )
-        ax.scatter(
-            [nominal.t[-1]], [nominal.downrange[-1]], [nominal.altitude[-1]],
-            color='blue', s=100, marker='o'
-        )
+    has_eci = nominal is not None and nominal.r_eci is not None
 
-    # 收集时间和行距范围用于绘制参考平面
-    t_min, t_max = 0, 100
-    dr_min, dr_max = 0, 500
-    openloop_plotted = False  # 标记是否已绘制开环轨迹
+    if has_eci:
+        # 使用ECI坐标系绘制
+        # 绘制地球参考球（简化为线框）
+        u = np.linspace(0, 2 * np.pi, 30)
+        v = np.linspace(0, np.pi, 20)
+        x_earth = R_EARTH_KM * np.outer(np.cos(u), np.sin(v))
+        y_earth = R_EARTH_KM * np.outer(np.sin(u), np.sin(v))
+        z_earth = R_EARTH_KM * np.outer(np.ones(np.size(u)), np.cos(v))
+        ax.plot_wireframe(x_earth, y_earth, z_earth, color='lightblue', alpha=0.3, linewidth=0.5)
 
-    # 加载各eta下的开环和重规划轨迹
-    for eta in ETA_VALUES:
-        domain = determine_mission_domain(eta)
-        color = DOMAIN_COLORS.get(domain, '#3498db')
+        # 绘制名义轨迹
+        if nominal is not None and nominal.r_eci is not None:
+            r_nom = nominal.r_eci / 1000.0  # m -> km
+            step = max(1, len(r_nom) // 500)
+            ax.plot(r_nom[::step, 0], r_nom[::step, 1], r_nom[::step, 2],
+                    'b-', linewidth=2, label="名义轨迹", alpha=0.8)
+            ax.scatter(*r_nom[-1], color='blue', s=100, marker='o')
 
-        openloop, replan = all_data.get(fault_key, {}).get(eta, (None, None))
+        # 绘制各eta下的轨迹
+        for eta in ETA_VALUES:
+            domain = determine_mission_domain(eta)
+            color = DOMAIN_COLORS.get(domain, '#3498db')
+            _, replan = all_data.get(fault_key, {}).get(eta, (None, None))
 
-        # 绘制故障开环轨迹（只绘制一次，因为各eta的开环轨迹相同）
-        if openloop is not None and not openloop_plotted:
-            ax.plot(
-                openloop.t, openloop.downrange, openloop.altitude,
-                '--', color='gray', linewidth=2, label="故障开环轨迹", alpha=0.7
-            )
-            ax.scatter(
-                [openloop.t[-1]], [openloop.downrange[-1]], [openloop.altitude[-1]],
-                color='gray', s=80, marker='x', zorder=5
-            )
-            openloop_plotted = True
-            # 更新范围
-            t_max = max(t_max, openloop.t[-1])
-            dr_max = max(dr_max, openloop.downrange[-1])
+            if replan is not None and replan.r_eci is not None:
+                r_replan = replan.r_eci / 1000.0
+                step = max(1, len(r_replan) // 500)
+                ax.plot(r_replan[::step, 0], r_replan[::step, 1], r_replan[::step, 2],
+                        '-', color=color, linewidth=2, label=f'{domain} (η={eta})')
+                ax.scatter(*r_replan[-1], color=color, s=80, marker='*')
 
-        # 绘制重规划轨迹
-        if replan is not None:
-            ax.plot(
-                replan.t, replan.downrange, replan.altitude,
-                '-', color=color, linewidth=2.5,
-                label=f'重规划 {domain} (η={eta})'
-            )
-            ax.scatter(
-                [replan.t[-1]], [replan.downrange[-1]], [replan.altitude[-1]],
-                color=color, s=120, marker='*', zorder=10
-            )
-            # 更新范围
-            t_max = max(t_max, replan.t[-1])
-            dr_max = max(dr_max, replan.downrange[-1])
+        # 绘制目标轨道高度参考圆（500km）
+        theta = np.linspace(0, 2 * np.pi, 100)
+        r_orbit = R_EARTH_KM + 500
+        ax.plot(r_orbit * np.cos(theta), r_orbit * np.sin(theta), np.zeros_like(theta),
+                'g--', alpha=0.5, linewidth=1, label='500km轨道')
 
-    # 绘制轨道高度参考线
-    for orbit_name, height in ORBIT_HEIGHTS.items():
-        orbit_color = DOMAIN_COLORS.get(orbit_name, 'gray')
-        # 绘制水平参考线（在固定时间位置）
-        t_ref = t_max * 0.1  # 在图的左侧绘制
-        dr_range = np.linspace(dr_min, dr_max * 0.3, 2)
-        ax.plot(
-            [t_ref, t_ref], dr_range, [height, height],
-            '--', color=orbit_color, linewidth=1.5, alpha=0.6
-        )
-        # 添加高度标签
-        ax.text(
-            t_ref, dr_max * 0.32, height,
-            f'{height}km\n({orbit_name})',
-            fontsize=8, color=orbit_color, ha='left', va='bottom'
-        )
+        ax.set_xlabel('X (km)', fontsize=10)
+        ax.set_ylabel('Y (km)', fontsize=10)
+        ax.set_zlabel('Z (km)', fontsize=10)
 
-    # 设置轴标签
-    ax.set_xlabel("时间 (s)", fontsize=12, labelpad=10)
-    ax.set_ylabel("地面行距 (km)", fontsize=12, labelpad=10)
-    ax.set_zlabel("高度 (km)", fontsize=12, labelpad=10)
+        # 设置等比例显示
+        max_range = R_EARTH_KM + 600
+        ax.set_xlim([-max_range, max_range])
+        ax.set_ylim([-max_range, max_range])
+        ax.set_zlim([-max_range, max_range])
+
+    else:
+        # 使用 (时间, 行距, 高度) 坐标系
+        if nominal is not None:
+            ax.plot(nominal.t, nominal.downrange, nominal.altitude,
+                    'b-', linewidth=2, label="名义轨迹", alpha=0.8)
+            ax.scatter([nominal.t[-1]], [nominal.downrange[-1]], [nominal.altitude[-1]],
+                       color='blue', s=100, marker='o')
+
+        for eta in ETA_VALUES:
+            domain = determine_mission_domain(eta)
+            color = DOMAIN_COLORS.get(domain, '#3498db')
+            _, replan = all_data.get(fault_key, {}).get(eta, (None, None))
+
+            if replan is not None:
+                ax.plot(replan.t, replan.downrange, replan.altitude,
+                        '-', color=color, linewidth=2, label=f'{domain} (η={eta})')
+                ax.scatter([replan.t[-1]], [replan.downrange[-1]], [replan.altitude[-1]],
+                           color=color, s=80, marker='*')
+
+        ax.set_xlabel("时间 (s)", fontsize=10)
+        ax.set_ylabel("地面行距 (km)", fontsize=10)
+        ax.set_zlabel("高度 (km)", fontsize=10)
 
     # 设置标题
     fault_name = FAULT_NAMES.get(fault_key, fault_key)
-    ax.set_title(f"{fault_key}: {fault_name} - 3D轨迹对比", fontsize=13, fontweight='bold')
+    coord_type = "ECI" if has_eci else "时间-行距-高度"
+    ax.set_title(f"{fault_key}: {fault_name} - 3D轨迹对比 ({coord_type})", fontsize=12, fontweight='bold')
 
-    # 图例
-    ax.legend(loc='upper left', fontsize=9)
-
-    # 调整视角
+    ax.legend(loc='upper left', fontsize=8)
     ax.view_init(elev=20, azim=-60)
 
     plt.tight_layout()
 
-    # 保存
     out_path = out_dir / f"fig4_3d_{fault_key}_trajectory.png"
     plt.savefig(out_path, dpi=300, bbox_inches='tight')
+    plt.savefig(out_path.with_suffix('.pdf'), bbox_inches='tight')
     plt.close()
     print(f"  保存: {out_path.name}")
 

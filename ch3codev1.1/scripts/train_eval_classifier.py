@@ -537,24 +537,19 @@ def main(args):
                 if p_k[k] >= p_min and m_k[k] >= m_min:
                     candidates.append(k)
 
-            # Decision logic with conservative nominal bias
+            # Decision logic: prioritize fault detection over nominal
             if len(candidates) == 0:
-                # No class meets thresholds → default to nominal
-                pred_label = 0
-            elif 0 in candidates:
-                # If nominal is a candidate, check if it's strongly supported
-                # Require nominal to have either:
-                # 1) Highest confidence among candidates, OR
-                # 2) At least 80% window proportion
-                if m_k[0] >= max(m_k[c] for c in candidates) or p_k[0] >= 0.80:
-                    pred_label = 0
-                else:
-                    # Otherwise, select non-nominal class with highest confidence
-                    non_nominal = [c for c in candidates if c != 0]
-                    pred_label = max(non_nominal, key=lambda k: m_k[k]) if non_nominal else 0
+                # No class meets thresholds → use max window proportion
+                pred_label = int(np.argmax(p_k))
             else:
-                # No nominal candidate → select class with highest average confidence m_k
-                pred_label = max(candidates, key=lambda k: m_k[k])
+                # Check if any fault class is a candidate
+                fault_candidates = [c for c in candidates if c != 0]
+                if fault_candidates:
+                    # Prefer fault with highest (proportion * confidence) score
+                    pred_label = max(fault_candidates, key=lambda k: p_k[k] * m_k[k])
+                else:
+                    # Only nominal is candidate
+                    pred_label = 0
 
             y_flight_true.append(true_label)
             y_flight_pred.append(pred_label)

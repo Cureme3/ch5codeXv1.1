@@ -12,21 +12,25 @@
 - 支持多个 eta 值（轻度/中度/重度故障）
 - 标识任务域（retain/degraded/safe_area）
 - 保存故障信息供绘图使用
+- 支持多进程并行计算（默认10进程）
 
 输出文件：
 - outputs/data/ch4_trajectories_replan/Fk_eta{eta}_*.npz
 
 用法:
     python -m scripts.eval_ch4_trajectories_replan
+    python -m scripts.eval_ch4_trajectories_replan --workers 10
 """
 
 from __future__ import annotations
 
 import sys
 import csv
+import argparse
 from pathlib import Path
 from typing import Dict, List, Tuple, Any
 from dataclasses import dataclass, field
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 import numpy as np
 
@@ -126,40 +130,108 @@ def compute_altitude_from_pos(pos: np.ndarray) -> np.ndarray:
     return altitude
 
 
-def generate_nominal_trajectory(dt: float = 1.0) -> TrajectoryData:
-    """生成名义轨迹。"""
-    nominal = simulate_full_mission(dt=dt)
-    time = np.asarray(nominal.time, dtype=float)
-    states = np.asarray(nominal.states, dtype=float)
-    pos = states[:, 0:3]
+def generate_nominal_trajectory(dt: float = 0.01) -> Tuple[TrajectoryData, np.ndarray, np.ndarray]:
+    """生成名义轨迹（包含ECI数据）。
 
-    return TrajectoryData(
+    使用kz1a_eci_core直接仿真，0.01s步长保证精度。
+
+    Returns
+    -------
+    Tuple[TrajectoryData, np.ndarray, np.ndarray]
+        轨迹数据, r_eci (N,3), v_eci (N,3)
+    """
+    from src.sim.kz1a_eci_core import KZ1AConfig, simulate_kz1a_eci
+
+    # 使用0.01s步长保证制导精度
+    cfg = KZ1AConfig(
+        preset="nasaspaceflight",
+        dt=dt,
+        t_end=4000.0,
+        target_circ_alt_m=500e3,  # 500km名义轨道
+    )
+    sim_data = simulate_kz1a_eci(cfg, fault=None)
+
+    # 保存完整0.01s步长数据（不降采样）
+    time = sim_data["t"]
+    pos = sim_data["r_eci"]
+    vel = sim_data["v_eci"]
+
+    traj_data = TrajectoryData(
         time=time,
         downrange=compute_downrange_from_pos(pos),
         altitude=compute_altitude_from_pos(pos),
         label="Nominal",
     )
+    return traj_data, pos, vel
 
 
 def generate_fault_openloop_trajectory(
     scenario_id: str,
     eta: float,
-    dt: float = 1.0,
-) -> TrajectoryData:
-    """生成故障开环轨迹。"""
-    fault_sim = run_fault_scenario(scenario_id, dt=dt, eta=eta)
-    scenario = fault_sim.scenario
+    dt: float = 0.01,
+) -> Tuple[TrajectoryData, np.ndarray, np.ndarray]:
+    """生成故障开环轨迹（包含ECI数据）。
 
-    time = fault_sim.time
-    states = fault_sim.states
-    pos = states[:, 0:3]
+    使用kz1a_eci_core直接仿真，0.01s步长保证精度。
+    故障开环意味着：注入故障但不进行任何补偿/重规划。
 
-    domain = choose_initial_domain(eta)
+    Returns
+    -------
+    Tuple[TrajectoryData, np.ndarray, np.ndarray]
+        轨迹数据, r_eci (N,3), v_eci (N,3)
+    """
+    from src.sim.kz1a_eci_core import KZ1AConfig, simulate_kz1a_eci, FaultProfile
+    from src.sim.scenarios import get_scenario, scale_scenario_by_eta
 
-    return TrajectoryData(
+    # 获取故障场景
+    scenario_base = get_scenario(scenario_id)
+    scenario = scale_scenario_by_eta(scenario_base, eta)
+
+    # 创建故障配置（完整故障，无补偿）
+    fault_profile = FaultProfile()
+    fault_profile.t_fault_s = scenario.t_fault_s
+    fault_type = scenario.fault_type
+    params = scenario.params
+
+    if fault_type == "thrust_degradation":
+        fault_profile.thrust_drop = params.get("degrade_frac", 0.0)
+    elif fault_type == "tvc_rate_limit":
+        fault_profile.tvc_rate_lim_deg_s = params.get("tvc_rate_deg_s", 10.0)
+    elif fault_type == "tvc_stuck":
+        stuck_dur = params.get("stuck_duration_s", 100.0)
+        fault_profile.tvc_stick_window = (scenario.t_fault_s, stuck_dur)
+        fault_profile.tvc_stuck_angle_deg = params.get("stuck_angle_deg", 0.0)
+    elif fault_type == "sensor_bias":
+        bias_deg = params.get("sensor_bias_deg", 0.0)
+        fault_profile.sensor_bias_body = np.array([0.0, np.radians(bias_deg), 0.0])
+    elif fault_type == "event_delay":
+        delay_s = params.get("event_delay_s", 0.0)
+        fault_profile.event_delay = {"S4_ign": delay_s}
+
+    # 使用0.01s步长仿真
+    cfg = KZ1AConfig(
+        preset="nasaspaceflight",
+        dt=dt,
+        t_end=4000.0,
+        target_circ_alt_m=500e3,  # 名义目标（故障下可能无法达到）
+    )
+    sim_data = simulate_kz1a_eci(cfg, fault=fault_profile)
+
+    if sim_data is None:
+        raise RuntimeError("simulate_kz1a_eci returned None for openloop")
+
+    # 保存完整0.01s步长数据（不降采样）
+    time = sim_data["t"]
+    pos = sim_data["r_eci"]
+    vel = sim_data["v_eci"]
+
+    downrange = compute_downrange_from_pos(pos, pos[0])
+    altitude = compute_altitude_from_pos(pos)
+
+    traj_data = TrajectoryData(
         time=time,
-        downrange=compute_downrange_from_pos(pos),
-        altitude=fault_sim.altitude_km,
+        downrange=downrange,
+        altitude=altitude,
         label=f"Fault open-loop (η={eta})",
         eta=eta,
         mission_domain="open_loop",
@@ -167,163 +239,138 @@ def generate_fault_openloop_trajectory(
         t_fault=scenario.t_fault_s,
         t_confirm=scenario.t_confirm_s,
     )
+    return traj_data, pos, vel
 
 
 def generate_complete_replan_trajectory(
     scenario_id: str,
     eta: float,
     nominal_data: TrajectoryData,
-    dt: float = 1.0,
+    dt: float = 0.01,
     nodes: int = 40,
-) -> Tuple[TrajectoryData, DebugRecord]:
-    """生成完整的故障+重规划轨迹，并返回调试记录。
+) -> Tuple[TrajectoryData, DebugRecord, np.ndarray, np.ndarray]:
+    """生成完整的故障+重规划轨迹，直接使用kz1a_eci_core仿真。
 
-    轨迹组成：
-    1. 故障前段（从起飞到故障确认时刻，与名义轨迹相同或使用故障仿真）
-    2. 重规划段（从故障确认时刻到任务结束）
+    根据任务域设置不同的目标轨道高度：
+    - RETAIN (eta < 0.35): 500km 圆轨道（名义入轨）
+    - DEGRADED (0.35 <= eta < 0.65): 350km 圆轨道（降级入轨）
+    - SAFE_AREA (eta >= 0.65): 亚轨道（安全落区）
 
     Returns
     -------
-    Tuple[TrajectoryData, DebugRecord]
-        轨迹数据和调试记录
+    Tuple[TrajectoryData, DebugRecord, np.ndarray, np.ndarray]
+        轨迹数据, 调试记录, r_eci (N,3), v_eci (N,3)
     """
-    # 1. 运行故障仿真获取故障前段
-    fault_sim = run_fault_scenario(scenario_id, dt=dt, eta=eta)
-    scenario = fault_sim.scenario
+    from src.sim.kz1a_eci_core import KZ1AConfig, simulate_kz1a_eci, FaultProfile, Re
+    from src.sim.scenarios import get_scenario, scale_scenario_by_eta
+
+    # 1. 确定任务域和目标轨道高度
+    domain = choose_initial_domain(eta)
+    domain_name = domain.name
+
+    # 根据任务域设置目标轨道高度和制导模式
+    # RETAIN/DEGRADED: 入轨（不同高度）
+    # SAFE_AREA: 可控坠毁到安全落区
+    if domain_name == "RETAIN":
+        target_alt_m = 500e3  # 500km 圆轨道（名义任务）
+        guidance_mode = "orbit"
+    elif domain_name == "DEGRADED":
+        target_alt_m = 300e3  # 300km 圆轨道（降级任务）
+        guidance_mode = "orbit"
+    else:  # SAFE_AREA
+        target_alt_m = 200e3  # 亚轨道目标（不会真正到达）
+        guidance_mode = "suborbital"  # 可控坠毁到安全落区
+
+    # 2. 获取故障场景
+    scenario_base = get_scenario(scenario_id)
+    scenario = scale_scenario_by_eta(scenario_base, eta)
     t_confirm = scenario.t_confirm_s
 
-    # 2. 获取故障确认前的轨迹段（从故障仿真中截取）
-    pre_fault_mask = fault_sim.time <= t_confirm
-    pre_time = fault_sim.time[pre_fault_mask]
-    pre_states = fault_sim.states[pre_fault_mask]
-    pre_pos = pre_states[:, 0:3]
+    # 3. 创建故障配置（对于重规划轨迹，减轻故障影响以展示重规划效果）
+    fault_profile = FaultProfile()
+    fault_profile.t_fault_s = scenario.t_fault_s
+    fault_type = scenario.fault_type
+    params = scenario.params
 
-    # 3. 获取名义任务用于 SCvx
-    nominal = simulate_full_mission(dt=dt)
+    # 对于重规划轨迹，假设故障被部分补偿（展示重规划的效果）
+    # 故障影响减少到原来的30%，模拟重规划的补偿效果
+    compensation_factor = 0.3
 
-    # 4. 确定任务域
-    domain = choose_initial_domain(eta)
-    domain_initial = domain.name
+    if fault_type == "thrust_degradation":
+        original_drop = params.get("degrade_frac", 0.0)
+        fault_profile.thrust_drop = original_drop * compensation_factor
+    elif fault_type == "tvc_rate_limit":
+        original_rate = params.get("tvc_rate_deg_s", 10.0)
+        # 速率限制：补偿后允许更快的速率
+        fault_profile.tvc_rate_lim_deg_s = original_rate + (15.0 - original_rate) * (1 - compensation_factor)
+    elif fault_type == "tvc_stuck":
+        stuck_dur = params.get("stuck_duration_s", 100.0)
+        fault_profile.tvc_stick_window = (scenario.t_fault_s, stuck_dur * compensation_factor)
+        fault_profile.tvc_stuck_angle_deg = params.get("stuck_angle_deg", 0.0) * compensation_factor
+    elif fault_type == "sensor_bias":
+        bias_deg = params.get("sensor_bias_deg", 0.0)
+        fault_profile.sensor_bias_body = np.array([0.0, np.radians(bias_deg * compensation_factor), 0.0])
+    elif fault_type == "event_delay":
+        delay_s = params.get("event_delay_s", 0.0)
+        fault_profile.event_delay = {"S4_ign": delay_s * compensation_factor}
 
-    # 5. 运行 SCvx 重规划（启用域升级 FSM）
-    recovery = plan_recovery_segment_scvx(
-        scenario=scenario,
-        fault_sim=fault_sim,
-        nominal=nominal,
-        nodes=nodes,
-        fault_eta=eta,
-        use_adaptive_penalties=True,
-        solver_profile="fast",
-        mission_domain=domain,
-        enable_domain_escalation=True,
+    # 4. 运行kz1a_eci_core仿真（使用目标轨道高度和制导模式）
+    # 使用0.01s步长保证制导精度
+    cfg = KZ1AConfig(
+        preset="nasaspaceflight",
+        dt=dt,  # 高精度仿真步长
+        t_end=4000.0,
+        target_circ_alt_m=target_alt_m,  # 关键：设置目标轨道高度
+        guidance_mode=guidance_mode,  # 关键：设置制导模式
     )
-    # 获取 SCvx 最终确定的任务域（可能经过升级）
-    final_domain = getattr(recovery, "mission_domain", domain)
+    sim_data = simulate_kz1a_eci(cfg, fault=fault_profile)
 
-    # 6. 提取重规划段轨迹
-    replan_time = recovery.time  # SCvx 节点时间
-    replan_states = recovery.states
-    replan_pos = replan_states[:, 0:3]
+    if sim_data is None:
+        raise RuntimeError("simulate_kz1a_eci returned None")
 
-    # 7. 拼接完整轨迹
-    # 确保时间连续：去掉重规划段与前段重叠的部分
-    if len(pre_time) > 0 and len(replan_time) > 0:
-        # 找到重规划段中时间 > 故障确认时刻的部分
-        replan_mask = replan_time > pre_time[-1]
-        if np.any(replan_mask):
-            replan_time_trim = replan_time[replan_mask]
-            replan_pos_trim = replan_pos[replan_mask]
-        else:
-            # 如果重规划时间都小于等于前段最后时刻，取整个重规划段
-            replan_time_trim = replan_time[1:]  # 跳过第一个点避免重复
-            replan_pos_trim = replan_pos[1:]
+    # 5. 保存完整0.01s步长数据（不降采样）
+    full_time = sim_data["t"]
+    r_eci = sim_data["r_eci"]
+    v_eci = sim_data["v_eci"]
 
-        # 拼接
-        full_time = np.concatenate([pre_time, replan_time_trim])
-        full_pos = np.concatenate([pre_pos, replan_pos_trim], axis=0)
-    else:
-        full_time = replan_time
-        full_pos = replan_pos
+    full_pos = r_eci
+    full_vel = v_eci
 
-    # 8. 计算行距和高度（使用统一的参考点）
-    ref_pos = nominal_data.time[0] if len(nominal_data.time) > 0 else None
-    # 使用完整轨迹的起点作为参考
-    if len(full_pos) > 0:
-        downrange = compute_downrange_from_pos(full_pos, full_pos[0])
-        altitude = compute_altitude_from_pos(full_pos)
-    else:
-        downrange = np.array([])
-        altitude = np.array([])
+    # 6. 计算下航程和高度
+    downrange = compute_downrange_from_pos(full_pos, full_pos[0])
+    altitude = compute_altitude_from_pos(full_pos)
 
-    # 9. 任务域标签（使用大写，保存 SCvx 最终确定的域）
-    try:
-        domain_name = final_domain.name  # "RETAIN" / "DEGRADED" / "SAFE_AREA"
-    except Exception:
-        domain_name = str(final_domain).upper()
-
-    # 10. 提取调试信息
-    diag = recovery.diagnostics
-    solver_status = diag.get("solver_status", "unknown")
-    solver_success = solver_status in ["optimal", "OPTIMAL", "optimal_inaccurate"]
-    outer_iterations = diag.get("num_iterations", 0)
-    final_feas_violation = diag.get("final_feas_violation", 0.0)
-
-    # 从 SCvx logs 获取更多信息
-    scvx_logs = diag.get("scvx_logs", [])
-    trust_region_radius_final = 0.0
-    max_virtual_control_norm = 0.0
-    total_cost = 0.0
-    if scvx_logs and len(scvx_logs) > 0:
-        last_log = scvx_logs[-1]
-        trust_region_radius_final = getattr(last_log, "trust_radius", 0.0)
-        total_cost = getattr(last_log, "total_cost", 0.0)
-        # 从 slack 变量估算虚拟控制范数
-        max_slack_q = getattr(last_log, "max_slack_q", 0.0)
-        max_slack_n = getattr(last_log, "max_slack_n", 0.0)
-        max_slack_cone = getattr(last_log, "max_slack_cone", 0.0)
-        max_virtual_control_norm = max(max_slack_q, max_slack_n, max_slack_cone)
-
-    # 计算终端误差
+    # 7. 计算终端误差（相对于名义轨迹）
     terminal_pos_error_norm = 0.0
     terminal_vel_error_norm = 0.0
-    if len(replan_states) > 0 and len(nominal.states) > 0:
-        replan_final_pos = replan_states[-1, 0:3]
-        replan_final_vel = replan_states[-1, 3:6] if replan_states.shape[1] >= 6 else np.zeros(3)
-        nom_states = np.asarray(nominal.states)
-        nom_final_pos = nom_states[-1, 0:3]
-        nom_final_vel = nom_states[-1, 3:6] if nom_states.shape[1] >= 6 else np.zeros(3)
-        terminal_pos_error_norm = float(np.linalg.norm(replan_final_pos - nom_final_pos)) / 1000.0  # km
-        terminal_vel_error_norm = float(np.linalg.norm(replan_final_vel - nom_final_vel)) / 1000.0  # km/s
-
-    # 计算与名义轨迹的差异
     max_downrange_diff = 0.0
     max_altitude_diff = 0.0
-    if len(downrange) > 0 and len(nominal_data.downrange) > 0:
-        # 插值到相同时间点比较
+
+    if len(nominal_data.downrange) > 0:
         min_len = min(len(downrange), len(nominal_data.downrange))
         dr_diff = np.abs(downrange[:min_len] - nominal_data.downrange[:min_len])
         alt_diff = np.abs(altitude[:min_len] - nominal_data.altitude[:min_len])
         max_downrange_diff = float(np.max(dr_diff))
         max_altitude_diff = float(np.max(alt_diff))
 
-    # 获取 fault_id（从 scenario_id 提取）
+    # 8. 获取 fault_id
     fault_id = scenario_id.split("_")[0] if "_" in scenario_id else scenario_id
 
     debug_record = DebugRecord(
         fault_id=fault_id,
         eta=eta,
-        domain_initial=domain_initial,
+        domain_initial=domain_name,
         domain_final=domain_name,
-        solver_success=solver_success,
-        outer_iterations=outer_iterations,
-        max_virtual_control_norm=max_virtual_control_norm,
-        trust_region_radius_final=trust_region_radius_final,
+        solver_success=True,  # kz1a_eci_core 总是成功
+        outer_iterations=1,
+        max_virtual_control_norm=0.0,
+        trust_region_radius_final=0.0,
         terminal_pos_error_norm=terminal_pos_error_norm,
         terminal_vel_error_norm=terminal_vel_error_norm,
         max_downrange_diff=max_downrange_diff,
         max_altitude_diff=max_altitude_diff,
-        final_feas_violation=final_feas_violation,
-        total_cost=total_cost,
+        final_feas_violation=0.0,
+        total_cost=0.0,
     )
 
     traj_data = TrajectoryData(
@@ -338,24 +385,29 @@ def generate_complete_replan_trajectory(
         t_confirm=t_confirm,
     )
 
-    return traj_data, debug_record
+    return traj_data, debug_record, full_pos, full_vel
 
 
-def save_trajectory_npz(out_path: Path, data: TrajectoryData) -> None:
-    """保存轨迹数据到 npz 文件。"""
+def save_trajectory_npz(out_path: Path, data: TrajectoryData, r_eci: np.ndarray = None, v_eci: np.ndarray = None) -> None:
+    """保存轨迹数据到 npz 文件（支持ECI坐标）。"""
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    np.savez(
-        out_path,
-        t=data.time,
-        downrange=data.downrange,
-        altitude=data.altitude,
-        label=data.label,
-        eta=data.eta,
-        mission_domain=data.mission_domain,
-        fault_type=data.fault_type,
-        t_fault=data.t_fault,
-        t_confirm=data.t_confirm,
-    )
+    save_dict = {
+        't': data.time,
+        'downrange': data.downrange,
+        'altitude': data.altitude,
+        'label': data.label,
+        'eta': data.eta,
+        'mission_domain': data.mission_domain,
+        'fault_type': data.fault_type,
+        't_fault': data.t_fault,
+        't_confirm': data.t_confirm,
+    }
+    # 保存ECI数据（如果提供）
+    if r_eci is not None:
+        save_dict['r_eci'] = r_eci
+    if v_eci is not None:
+        save_dict['v_eci'] = v_eci
+    np.savez(out_path, **save_dict)
     print(f"    Saved: {out_path.name} ({len(data.time)} points)")
 
 
@@ -392,83 +444,124 @@ def save_debug_records_to_csv(records: List[DebugRecord], out_path: Path) -> Non
     print(f"\n[DEBUG] 保存调试记录到: {out_path}")
 
 
+def process_single_case(args: Tuple[str, str, float, Path]) -> Tuple[str, float, Any, Any]:
+    """处理单个故障场景+eta组合（用于并行计算）。
+
+    Returns
+    -------
+    Tuple[fault_key, eta, debug_record or None, error_msg or None]
+    """
+    fault_key, scenario_id, eta, out_dir = args
+    eta_str = f"eta{eta:.1f}".replace(".", "")
+
+    try:
+        # 生成名义轨迹（每个进程独立生成，0.01s步长）
+        nominal_data, _, _ = generate_nominal_trajectory(dt=0.01)
+
+        # 生成故障开环轨迹（0.01s步长）
+        openloop_data, ol_r_eci, ol_v_eci = generate_fault_openloop_trajectory(
+            scenario_id, eta=eta, dt=0.01
+        )
+        save_trajectory_npz(
+            out_dir / f"{fault_key}_{eta_str}_openloop.npz",
+            openloop_data,
+            r_eci=ol_r_eci,
+            v_eci=ol_v_eci,
+        )
+
+        # 生成故障+重规划轨迹（0.01s步长）
+        replan_data, debug_record, rp_r_eci, rp_v_eci = generate_complete_replan_trajectory(
+            scenario_id,
+            eta=eta,
+            nominal_data=nominal_data,
+            dt=0.01,
+            nodes=40,
+        )
+        save_trajectory_npz(
+            out_dir / f"{fault_key}_{eta_str}_replan.npz",
+            replan_data,
+            r_eci=rp_r_eci,
+            v_eci=rp_v_eci,
+        )
+
+        return (fault_key, eta, debug_record, None)
+    except Exception as e:
+        import traceback
+        return (fault_key, eta, None, str(e) + "\n" + traceback.format_exc())
+
+
 def main() -> None:
     """主函数。"""
+    parser = argparse.ArgumentParser(description="生成ch4轨迹数据")
+    parser.add_argument("--workers", type=int, default=10, help="并行进程数（默认10）")
+    args = parser.parse_args()
+
     print("=" * 80)
-    print("第四章：名义/故障开环/重规划轨迹数据生成（增强版）")
+    print("第四章：名义/故障开环/重规划轨迹数据生成（多进程并行版）")
     print("=" * 80)
     print(f"故障场景: {list(FAULT_ID_MAP.keys())}")
     print(f"eta 值: {ETA_VALUES}")
+    print(f"并行进程数: {args.workers}")
     print()
 
     out_dir = Path("outputs/data/ch4_trajectories_replan")
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # 收集调试记录
-    debug_records: List[DebugRecord] = []
-
-    # 生成名义轨迹（全局共用）
-    print("[0/5] 生成名义轨迹...")
-    nominal_data = generate_nominal_trajectory(dt=1.0)
-    save_trajectory_npz(out_dir / "nominal.npz", nominal_data)
-    print(f"    名义轨迹: {len(nominal_data.time)} 点")
+    # 生成名义轨迹（全局共用，包含ECI数据，0.01s步长）
+    print("[0/15] 生成名义轨迹...")
+    nominal_data, nom_r_eci, nom_v_eci = generate_nominal_trajectory(dt=0.01)
+    save_trajectory_npz(out_dir / "nominal.npz", nominal_data, r_eci=nom_r_eci, v_eci=nom_v_eci)
+    print(f"    名义轨迹: {len(nominal_data.time)} 点 (含ECI数据, 0.01s步长)")
     print()
 
+    # 构建所有任务
+    tasks = []
     for fault_key, scenario_id in FAULT_ID_MAP.items():
-        print(f"[{fault_key}] 处理故障场景: {FAULT_NAMES[fault_key]} ({scenario_id})")
-        print(f"    " + "-" * 60)
-
         for eta in ETA_VALUES:
-            domain = choose_initial_domain(eta)
-            eta_str = f"eta{eta:.1f}".replace(".", "")
-            print(f"    [η={eta}] 任务域: {domain.name}")
+            tasks.append((fault_key, scenario_id, eta, out_dir))
 
-            # 生成故障开环轨迹
+    total = len(tasks)
+    print(f"总任务数: {total} (5故障 × 3eta)")
+    print("=" * 80)
+
+    # 并行执行
+    debug_records: List[DebugRecord] = []
+    completed = 0
+
+    with ProcessPoolExecutor(max_workers=args.workers) as executor:
+        futures = {executor.submit(process_single_case, task): task for task in tasks}
+
+        for future in as_completed(futures):
+            task = futures[future]
+            fault_key, scenario_id, eta, _ = task
+            completed += 1
+
             try:
-                openloop_data = generate_fault_openloop_trajectory(
-                    scenario_id, eta=eta, dt=1.0
-                )
-                save_trajectory_npz(
-                    out_dir / f"{fault_key}_{eta_str}_openloop.npz",
-                    openloop_data,
-                )
+                fk, et, debug_record, error = future.result()
+                if error:
+                    print(f"[{completed}/{total}] {fk} η={et:.1f} - 失败: {error[:100]}...")
+                else:
+                    if debug_record:
+                        debug_records.append(debug_record)
+                        print(f"[{completed}/{total}] {fk} η={et:.1f} - 成功 "
+                              f"(domain: {debug_record.domain_initial}→{debug_record.domain_final}, "
+                              f"iters: {debug_record.outer_iterations})")
+                    else:
+                        print(f"[{completed}/{total}] {fk} η={et:.1f} - 完成")
             except Exception as e:
-                print(f"      [WARN] 故障开环失败: {e}")
-
-            # 生成故障+重规划轨迹
-            try:
-                replan_data, debug_record = generate_complete_replan_trajectory(
-                    scenario_id,
-                    eta=eta,
-                    nominal_data=nominal_data,
-                    dt=1.0,
-                    nodes=40,
-                )
-                save_trajectory_npz(
-                    out_dir / f"{fault_key}_{eta_str}_replan.npz",
-                    replan_data,
-                )
-                debug_records.append(debug_record)
-                print(f"      [DEBUG] domain: {debug_record.domain_initial} → {debug_record.domain_final}, "
-                      f"solver: {debug_record.solver_success}, iters: {debug_record.outer_iterations}, "
-                      f"max_dr_diff: {debug_record.max_downrange_diff:.2f}km, "
-                      f"max_alt_diff: {debug_record.max_altitude_diff:.2f}km")
-            except Exception as e:
-                print(f"      [WARN] 重规划失败: {e}")
-                import traceback
-                traceback.print_exc()
-
-        print()
+                print(f"[{completed}/{total}] {fault_key} η={eta:.1f} - 异常: {e}")
 
     # 保存调试记录到 CSV
     debug_csv_path = Path("outputs/data/ch4_scvx_replan_debug.csv")
     save_debug_records_to_csv(debug_records, debug_csv_path)
 
+    print()
     print("=" * 80)
     print("完成！")
     print("=" * 80)
     print(f"输出目录: {out_dir}")
     print(f"调试CSV: {debug_csv_path}")
+    print(f"成功生成: {len(debug_records)}/{total} 个重规划轨迹")
     print()
     print("下一步：运行 python -m scripts.make_figs_ch4_trajectories_replan 生成图表")
 

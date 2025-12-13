@@ -262,6 +262,144 @@ def run_trajectory_planning(
     }
 
 
+def compute_orbital_elements(r_vec: np.ndarray, v_vec: np.ndarray, mu: float = 3.986004418e14) -> Dict[str, float]:
+    """从位置和速度向量计算轨道根数和入轨参数.
+
+    Parameters
+    ----------
+    r_vec : np.ndarray
+        位置向量 [m]
+    v_vec : np.ndarray
+        速度向量 [m/s]
+    mu : float
+        地球引力常数 [m^3/s^2]
+
+    Returns
+    -------
+    Dict[str, float]
+        轨道根数和入轨参数
+    """
+    R_EARTH = 6.378137e6  # m
+
+    r = np.linalg.norm(r_vec)
+    v = np.linalg.norm(v_vec)
+
+    # 角动量向量
+    h_vec = np.cross(r_vec, v_vec)
+    h = np.linalg.norm(h_vec)
+
+    # 节线向量 (指向升交点)
+    k_vec = np.array([0, 0, 1])
+    n_vec = np.cross(k_vec, h_vec)
+    n = np.linalg.norm(n_vec)
+
+    # 偏心率向量
+    e_vec = ((v**2 - mu/r) * r_vec - np.dot(r_vec, v_vec) * v_vec) / mu
+    e = np.linalg.norm(e_vec)
+
+    # 半长轴
+    energy = v**2 / 2 - mu / r
+    if abs(e - 1.0) > 1e-10:
+        a = -mu / (2 * energy)
+    else:
+        a = float('inf')
+
+    # 轨道倾角
+    i = np.arccos(np.clip(h_vec[2] / h, -1, 1))
+
+    # 升交点赤经 (RAAN)
+    if n > 1e-10:
+        Omega = np.arccos(np.clip(n_vec[0] / n, -1, 1))
+        if n_vec[1] < 0:
+            Omega = 2 * np.pi - Omega
+    else:
+        Omega = 0.0
+
+    # 近地点幅角
+    if n > 1e-10 and e > 1e-10:
+        omega = np.arccos(np.clip(np.dot(n_vec, e_vec) / (n * e), -1, 1))
+        if e_vec[2] < 0:
+            omega = 2 * np.pi - omega
+    else:
+        omega = 0.0
+
+    # 真近点角
+    if e > 1e-10:
+        nu = np.arccos(np.clip(np.dot(e_vec, r_vec) / (e * r), -1, 1))
+        if np.dot(r_vec, v_vec) < 0:
+            nu = 2 * np.pi - nu
+    else:
+        nu = 0.0
+
+    # 飞行路径角
+    gamma = np.arctan2(np.dot(r_vec, v_vec), h)
+
+    # 轨道周期 (仅对椭圆轨道有效)
+    if a > 0:
+        T = 2 * np.pi * np.sqrt(a**3 / mu)
+    else:
+        T = float('inf')
+
+    # 圆轨道速度 (参考)
+    v_circ = np.sqrt(mu / r)
+
+    # 轨道高度
+    h_alt = (r - R_EARTH) / 1000.0  # km
+
+    # 计算近地点和远地点高度 (对于椭圆轨道)
+    if a > 0 and e < 1:
+        r_periapsis = a * (1 - e)
+        r_apoapsis = a * (1 + e)
+        h_periapsis = (r_periapsis - R_EARTH) / 1000.0  # km
+        h_apoapsis = (r_apoapsis - R_EARTH) / 1000.0  # km
+    else:
+        h_periapsis = h_alt
+        h_apoapsis = h_alt
+
+    # 判断轨道类型
+    # 稳定轨道要求：近地点高度 > 150km (大气层外)
+    is_stable_orbit = a > R_EARTH and e < 1 and h_periapsis > 150
+
+    # 计算圆化机动后的轨道参数 (假设在当前高度进行圆化)
+    # 圆化后：a_circ = r, e_circ = 0, T_circ = 2*pi*sqrt(r^3/mu)
+    a_circ = r
+    T_circ = 2 * np.pi * np.sqrt(r**3 / mu)
+    dv_circ = v_circ - v  # 需要的圆化速度增量
+
+    # 判断圆化是否可行 (典型上面级能力 < 500 m/s)
+    circ_feasible = 0 < dv_circ < 500
+
+    return {
+        # 轨道根数 (当前瞬时轨道)
+        "semi_major_axis_km": a / 1000.0,
+        "eccentricity": e,
+        "inclination_deg": np.degrees(i),
+        "raan_deg": np.degrees(Omega),
+        "arg_periapsis_deg": np.degrees(omega),
+        "true_anomaly_deg": np.degrees(nu),
+        # 入轨参数
+        "altitude_km": h_alt,
+        "velocity_kms": v / 1000.0,
+        "circular_velocity_kms": v_circ / 1000.0,
+        "flight_path_angle_deg": np.degrees(gamma),
+        "orbital_period_s": T,
+        "orbital_period_min": T / 60.0,
+        # 近地点/远地点 (当前瞬时轨道)
+        "periapsis_altitude_km": h_periapsis,
+        "apoapsis_altitude_km": h_apoapsis,
+        "is_stable_orbit": is_stable_orbit,
+        # 圆化后轨道参数 (假设在当前高度圆化)
+        "circularized_altitude_km": h_alt,
+        "circularized_velocity_kms": v_circ / 1000.0,
+        "circularized_period_min": T_circ / 60.0,
+        "delta_v_circularization_ms": dv_circ,  # 圆化所需速度增量 (m/s)
+        "circularization_feasible": circ_feasible,  # 圆化是否可行 (ΔV < 500 m/s)
+        # 发射场参考 (酒泉)
+        "launch_site_lat": 40.96,
+        "launch_site_lon": 100.28,
+    }
+
+
 def _compute_downrange(states: np.ndarray, R_EARTH: float = 6.378137e6) -> np.ndarray:
     """计算地面行距（沿地表弧长）."""
     r = states[:, 0:3]
@@ -414,13 +552,14 @@ def run_pipeline(
         # 5. 任务域选择
         domain, domain_info = select_mission_domain(diag.severity_eta)
 
-        # 6. SCvx 轨迹重规划 - 冷启动
+        # 6. SCvx 轨迹重规划 - 冷启动 (启用域升级以确保轨道稳定性)
         scvx_result = simulate_fault_and_solve(
             scenario_id=scenario,
             eta=eta,
             nodes=40,
             use_adaptive_penalties=True,
             mission_domain=domain,
+            enable_domain_escalation=True,  # 启用域升级检查轨道稳定性
         )
         traj_rec = _to_traj_dict(scvx_result.time, scvx_result.states, R_EARTH)
 
@@ -441,6 +580,14 @@ def run_pipeline(
         terminal_velocity_kms = v_final / 1000.0
         plan_feasible = scvx_result.diagnostics.get("solver_status", "") in ["optimal", "OPTIMAL"]
 
+        # 计算轨道根数 (名义轨迹和重构轨迹)
+        nominal_orbital = compute_orbital_elements(
+            nominal_result.states[-1, 0:3], nominal_result.states[-1, 3:6]
+        )
+        reconfigured_orbital = compute_orbital_elements(
+            rec_states[-1, 0:3], rec_states[-1, 3:6]
+        )
+
     finally:
         _sys.stdout = old_stdout
 
@@ -456,13 +603,20 @@ def run_pipeline(
         },
         "mission_domain": {
             "name": domain.name,
+            "final_domain": scvx_result.mission_domain.name if scvx_result.mission_domain else domain.name,
             "h_target_km": domain_info["target_altitude_km"],
             "v_target_kms": domain_info["target_velocity_kms"],
+            "periapsis_km": scvx_result.diagnostics.get("periapsis_km"),
+            "domain_escalated": scvx_result.mission_domain != domain if scvx_result.mission_domain else False,
         },
         "trajectory": {
             "nominal": traj_nominal,
             "fault_open_loop": traj_fault,
             "reconfigured": traj_rec,
+        },
+        "orbital_elements": {
+            "nominal": nominal_orbital,
+            "reconfigured": reconfigured_orbital,
         },
         "raw": {
             "fault_type_true": fault_type,
@@ -758,6 +912,43 @@ def main():
         print(f"\n自适应权重:")
         print(f"  终端权重: {res['raw']['terminal_weight']:.2f}")
         print(f"  松弛权重 (q): {res['raw']['slack_weight_q']:.2f}")
+        # 轨道根数输出
+        print(f"\n轨道根数 (名义/重构):")
+        nom_orb = res["orbital_elements"]["nominal"]
+        rec_orb = res["orbital_elements"]["reconfigured"]
+        print(f"  半长轴 a: {nom_orb['semi_major_axis_km']:.1f} / {rec_orb['semi_major_axis_km']:.1f} km")
+        print(f"  偏心率 e: {nom_orb['eccentricity']:.4f} / {rec_orb['eccentricity']:.4f}")
+        print(f"  倾角 i: {nom_orb['inclination_deg']:.2f} / {rec_orb['inclination_deg']:.2f} deg")
+        print(f"  升交点赤经: {nom_orb['raan_deg']:.2f} / {rec_orb['raan_deg']:.2f} deg")
+        print(f"  近地点幅角: {nom_orb['arg_periapsis_deg']:.2f} / {rec_orb['arg_periapsis_deg']:.2f} deg")
+        print(f"  近地点高度: {nom_orb['periapsis_altitude_km']:.1f} / {rec_orb['periapsis_altitude_km']:.1f} km")
+        print(f"  远地点高度: {nom_orb['apoapsis_altitude_km']:.1f} / {rec_orb['apoapsis_altitude_km']:.1f} km")
+        print(f"\n入轨参数 (名义/重构):")
+        print(f"  入轨速度: {nom_orb['velocity_kms']:.3f} / {rec_orb['velocity_kms']:.3f} km/s")
+        print(f"  圆轨道速度: {nom_orb['circular_velocity_kms']:.3f} / {rec_orb['circular_velocity_kms']:.3f} km/s")
+        print(f"  飞行路径角: {nom_orb['flight_path_angle_deg']:.2f} / {rec_orb['flight_path_angle_deg']:.2f} deg")
+        print(f"  轨道周期: {nom_orb['orbital_period_min']:.2f} / {rec_orb['orbital_period_min']:.2f} min")
+        print(f"  稳定轨道: {'Yes' if nom_orb['is_stable_orbit'] else 'No'} / {'Yes' if rec_orb['is_stable_orbit'] else 'No'}")
+        # 圆化后轨道参数
+        print(f"\n圆化后轨道参数 (假设在当前高度进行圆化机动):")
+        nom_feas = "可行" if nom_orb.get('circularization_feasible', False) else "不可行(ΔV>500m/s)"
+        rec_feas = "可行" if rec_orb.get('circularization_feasible', False) else "不可行(ΔV>500m/s)"
+        print(f"  名义轨道:")
+        print(f"    圆化高度: {nom_orb['circularized_altitude_km']:.1f} km")
+        print(f"    圆化速度: {nom_orb['circularized_velocity_kms']:.3f} km/s")
+        print(f"    轨道周期: {nom_orb['circularized_period_min']:.2f} min")
+        print(f"    圆化ΔV: {nom_orb['delta_v_circularization_ms']:.1f} m/s ({nom_feas})")
+        print(f"  重构轨道:")
+        print(f"    圆化高度: {rec_orb['circularized_altitude_km']:.1f} km")
+        print(f"    圆化速度: {rec_orb['circularized_velocity_kms']:.3f} km/s")
+        print(f"    轨道周期: {rec_orb['circularized_period_min']:.2f} min")
+        print(f"    圆化ΔV: {rec_orb['delta_v_circularization_ms']:.1f} m/s ({rec_feas})")
+        # 入轨状态总结
+        print(f"\n入轨状态总结:")
+        nom_status = "稳定圆轨道" if nom_orb['is_stable_orbit'] else ("可圆化入轨" if nom_orb.get('circularization_feasible', False) else "需降级处理")
+        rec_status = "稳定圆轨道" if rec_orb['is_stable_orbit'] else ("可圆化入轨" if rec_orb.get('circularization_feasible', False) else "需降级处理")
+        print(f"  名义轨道: {nom_status}")
+        print(f"  重构轨道: {rec_status}")
 
 
 if __name__ == "__main__":

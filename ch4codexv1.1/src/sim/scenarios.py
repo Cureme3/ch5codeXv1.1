@@ -61,107 +61,131 @@ class FaultScenario:
 #    - 开环轨迹有明显偏离但不会太快坠毁
 #    - 不同eta值之间有明显区分
 #    - 故障时间点与飞行阶段匹配（推力非零时）
+#
+# KZ-1A 推力裕度分析（基于3D霍曼转移制导仿真验证）：
+# - 名义轨迹：500km SSO圆轨道，霍曼转移制导
+# - 0-6.5% 推力损失：仍可成功入轨（RETAIN）
+# - 7%+ 推力损失：需要S4轨迹重构（SCvx）
+# - 15%+ 推力损失：需要降级到SAFE_AREA
+# 因此 F1 最大推力损失设为 20%，使得：
+# - eta=0.2 → 4% 损失 → RETAIN 可行
+# - eta=0.5 → 10% 损失 → DEGRADED（需S4重构）
+# - eta=0.8 → 16% 损失 → SAFE_AREA（亚轨道/安全落区）
+#
+# 重要约束：
+# - 前三级(S1/S2/S3)是固体火箭，点燃后无法停止
+# - 只有S4(液体火箭)可以多次点火，是轨迹重构的关键
+# - 俯仰调整只能在S4阶段通过SCvx优化实现
 
 SCENARIO_CATALOG: Dict[str, FaultScenario] = {
     # F1：推力降级
     # t_fault=85s 是第二级点火初期，推力 ~354 kN
+    # 最大推力损失 20%（需要S4 SCvx轨迹重构）
+    # eta=0.2 → 4% 损失 → RETAIN
+    # eta=0.5 → 10% 损失 → DEGRADED（需S4重构）
+    # eta=0.8 → 16% 损失 → SAFE_AREA
     "F1_thrust_deg15": FaultScenario(
         id="F1_thrust_deg15",
-        description="第二级推力降级 30%，锥角收紧至 5°",
+        description="第二级推力降级 20%，需S4轨迹重构",
         fault_type="thrust_degradation",
-        t_fault_s=85.0,  # Changed to Stage 2 burn phase
+        t_fault_s=85.0,  # Stage 2 burn phase
         t_detect_s=95.0,
         t_confirm_s=105.0,
         t_plan_horizon_s=150.0,
         params={
-            "degrade_frac": 0.30,  # 30% thrust loss at eta=1.0
-            "theta_max_deg_after": 5.0,
+            "degrade_frac": 0.20,  # 20% thrust loss at eta=1.0
+            "theta_max_deg_after": 7.0,
         },
     ),
     "F1_severe": FaultScenario(
         id="F1_severe",
-        description="F1 severe thrust degradation (50% drop)",
+        description="F1 severe thrust degradation (5% drop)",
         fault_type="thrust_degradation",
         t_fault_s=85.0,
         t_detect_s=95.0,
         t_confirm_s=105.0,
         t_plan_horizon_s=150.0,
         params={
-            "degrade_frac": 0.50,
-            "theta_max_deg_after": 3.0,
+            "degrade_frac": 0.05,  # 5% thrust loss (definitely suborbital)
+            "theta_max_deg_after": 6.0,
         },
     ),
-    # F2：TVC 速率限制 + 俯仰偏置
-    # t_fault=100s 是第二级中期
+    # F2：TVC 卡滞偏置
+    # TVC固定偏置导致推力方向持续偏离
+    # eta=0.2有偏离不坠毁，eta=0.5/0.8坠毁
     "F2_tvc_rate4": FaultScenario(
         id="F2_tvc_rate4",
-        description="TVC 速率限制 2 deg/s 并叠加 -8° 俯仰偏置",
-        fault_type="tvc_rate_limit",
-        t_fault_s=100.0,  # Changed to middle of Stage 2
-        t_detect_s=110.0,
-        t_confirm_s=120.0,
+        description="TVC 卡滞偏置 (最大35度)",
+        fault_type="tvc_stuck",
+        t_fault_s=85.0,  # S2阶段发生故障
+        t_detect_s=95.0,
+        t_confirm_s=105.0,
         t_plan_horizon_s=140.0,
         params={
-            "tvc_rate_deg_s": 2.0,  # Relaxed from 0.2 to 2.0
-            "angle_bias_deg": -8.0,  # Reduced from -18.0 to -8.0
+            "stuck_angle_deg": 35.0,  # eta=0.2时7度，eta=0.5时17.5度，eta=0.8时28度
+            "stuck_duration_s": 200.0,
         },
     ),
     "F2_severe": FaultScenario(
         id="F2_severe",
-        description="F2 severe TVC rate limit 0.5 deg/s with -15 deg bias",
+        description="F2 severe: TVC速率限制 0.5 deg/s",
         fault_type="tvc_rate_limit",
         t_fault_s=100.0,
         t_detect_s=110.0,
         t_confirm_s=120.0,
         t_plan_horizon_s=140.0,
         params={
-            "tvc_rate_deg_s": 0.5,
-            "angle_bias_deg": -15.0,
+            "tvc_rate_deg_s": 0.25,  # 更严重的速率限制
         },
     ),
     # F3：TVC 卡滞
-    # t_fault=200s 是第三级点火阶段
+    # TVC在某一角度卡住，导致推力方向固定偏离
+    # eta=0.2有偏离不坠毁，eta=0.5/0.8坠毁
     "F3_tvc_stuck3deg": FaultScenario(
         id="F3_tvc_stuck3deg",
-        description="TVC 卡在 +12° 处",
+        description="TVC 卡滞 (最大50度, 150秒)",
         fault_type="tvc_stuck",
-        t_fault_s=200.0,  # Changed to Stage 3 burn
-        t_detect_s=210.0,
-        t_confirm_s=220.0,
+        t_fault_s=85.0,  # S2阶段初期，有推力
+        t_detect_s=90.0,
+        t_confirm_s=95.0,
         t_plan_horizon_s=140.0,
         params={
-            "stuck_angle_deg": 12.0,  # Increased from 5.0 to 12.0 for more realistic effect
+            "stuck_angle_deg": 50.0,  # eta=0.2时10度，eta=0.5时25度，eta=0.8时40度
+            "stuck_duration_s": 150.0,
         },
     ),
     "F3_severe": FaultScenario(
         id="F3_severe",
-        description="F3 severe TVC stuck at +20 deg",
+        description="F3 severe: TVC卡滞 20度",
         fault_type="tvc_stuck",
         t_fault_s=200.0,
         t_detect_s=210.0,
         t_confirm_s=220.0,
         t_plan_horizon_s=140.0,
         params={
-            "stuck_angle_deg": 20.0,  # Increased from 10.0 to 20.0
+            "stuck_angle_deg": 20.0,
+            "stuck_duration_s": 150.0,
         },
     ),
     # F4：姿态传感器偏置
-    # t_fault=100s 是第二级中期
+    # 加速度计/陀螺仪偏置导致姿态估计误差，进而影响制导
+    # 传感器偏置效果很强，需要较小参数
+    # eta=0.2有偏离不坠毁，eta=0.5/0.8坠毁
     "F4_sensor_bias2deg": FaultScenario(
         id="F4_sensor_bias2deg",
-        description="惯导俯仰量测出现 +5° 偏置",
+        description="传感器偏置 (最大8度)",
         fault_type="sensor_bias",
-        t_fault_s=100.0,  # Changed to Stage 2
-        t_detect_s=110.0,
-        t_confirm_s=120.0,
+        t_fault_s=85.0,  # S2阶段
+        t_detect_s=95.0,
+        t_confirm_s=105.0,
         t_plan_horizon_s=140.0,
         params={
-            "sensor_bias_deg": 5.0,  # Reduced from 10.0 to 5.0
+            "sensor_bias_deg": 8.0,  # eta=0.2时1.6度，eta=0.5时4度，eta=0.8时6.4度
         },
     ),
     "F4_severe": FaultScenario(
         id="F4_severe",
-        description="F4 severe attitude sensor bias +10 deg",
+        description="F4 severe: 传感器偏置 10度",
         fault_type="sensor_bias",
         t_fault_s=100.0,
         t_detect_s=110.0,
@@ -172,23 +196,23 @@ SCENARIO_CATALOG: Dict[str, FaultScenario] = {
         },
     ),
     # F5：事件时序延迟
-    # t_fault=200s 是第三级点火阶段，推力~148 kN
+    # 级间分离或点火延迟导致重力损失增加
+    # eta=0.2有偏离不坠毁，eta=0.5/0.8坠毁
     "F5_event_delay5s": FaultScenario(
         id="F5_event_delay5s",
-        description="第三级点火延迟 15 s",
+        description="S4点火延迟 (最大200秒)",
         fault_type="event_delay",
         t_fault_s=200.0,
         t_detect_s=205.0,
         t_confirm_s=215.0,
         t_plan_horizon_s=140.0,
         params={
-            "event_delay_s": 15.0,  # Reduced from 25.0 to 15.0
-            "delay_thrust_scale": 0.20,  # 20% thrust during delay
+            "event_delay_s": 200.0,  # eta=0.2时40s，eta=0.5时100s，eta=0.8时160s
         },
     ),
     "F5_severe": FaultScenario(
         id="F5_severe",
-        description="F5 severe event delay 30 s",
+        description="F5 severe: S4点火延迟 30秒",
         fault_type="event_delay",
         t_fault_s=200.0,
         t_detect_s=205.0,
@@ -196,7 +220,6 @@ SCENARIO_CATALOG: Dict[str, FaultScenario] = {
         t_plan_horizon_s=140.0,
         params={
             "event_delay_s": 30.0,
-            "delay_thrust_scale": 0.15,
         },
     ),
 }
@@ -273,11 +296,13 @@ def scale_scenario_by_eta(base: FaultScenario, eta: float) -> FaultScenario:
 
     elif fault_type == "tvc_rate_limit":
         # TVC 速率限制：eta 越大，限制越严（速率越小）
+        # 使用指数缩放使中等eta值也有明显效果
         if "tvc_rate_deg_s" in params:
-            base_rate = params["tvc_rate_deg_s"]
+            base_rate = params["tvc_rate_deg_s"]  # eta=1.0时的最小速率
             nominal_rate = 10.0  # 名义 TVC 速率 deg/s
-            # eta=0: 正常速率; eta=1: 最大限制（最小速率）
-            params["tvc_rate_deg_s"] = nominal_rate - eta * (nominal_rate - base_rate)
+            # 指数缩放: rate = nominal * (base/nominal)^eta
+            # eta=0: rate=10, eta=0.5: rate~1, eta=1: rate=base
+            params["tvc_rate_deg_s"] = nominal_rate * (base_rate / nominal_rate) ** eta
         # 角度偏置按 eta 缩放
         if "angle_bias_deg" in params:
             params["angle_bias_deg"] = eta * params["angle_bias_deg"]

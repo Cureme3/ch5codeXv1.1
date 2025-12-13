@@ -167,13 +167,19 @@ class KZ1AConfig:
     post_fairing_diam_m: float = 1.2
     
     # Sim settings
-    dt: float = 0.05
-    t_end: float = 1200.0
+    dt: float = 0.01
+    t_end: float = 4000.0
     
     # Launch site (Jiuquan)
     site_lat_deg: float = 40.96
     site_lon_deg: float = 100.28
-    
+
+    # Launch azimuth for 3D trajectory (deg from North, clockwise)
+    # For SSO i=97.4° from lat=40.96°: azimuth ≈ -10° (or 350°, toward NNW)
+    # sin(i) = cos(lat) * sin(azimuth) => azimuth = asin(sin(i)/cos(lat))
+    # For retrograde (i>90°): azimuth = 180° - asin(sin(180°-i)/cos(lat))
+    launch_azimuth_deg: float = -14.3  # SSO 97.4° from Jiuquan (empirically tuned for i=97.4°)
+
     # --- Target Orbit (500 km SSO / Circular) ---
     target_alt_m: float = 500e3
     target_alt_tol_m: float = 10e3  # For success check
@@ -187,6 +193,9 @@ class KZ1AConfig:
     # MECO tolerances
     target_alt_tolerance_m: float = 5e3   # Stop when |a - Re - target| < this
     target_vr_tolerance_mps: float = 20.0 # And |vr| < this (optional check)
+
+    # 制导模式: "orbit" (入轨), "suborbital" (亚轨道/安全落区)
+    guidance_mode: str = "orbit"
     
     # S4 Guidance Gains
     # Max pitch angle relative to velocity vector (AoA-like) or local horizon
@@ -220,7 +229,8 @@ class KZ1AConfig:
 class FaultProfile:
     thrust_drop: float = 0.0  # relative drop (0.2 => -20%)
     tvc_rate_lim_deg_s: Optional[float] = None
-    tvc_stick_window: Optional[Tuple[float, float]] = None
+    tvc_stick_window: Optional[Tuple[float, float]] = None  # (t_start, duration)
+    tvc_stuck_angle_deg: float = 0.0  # TVC卡滞角度（度）
     event_delay: Optional[Dict[str, float]] = None
     sensor_bias_body: Optional[np.ndarray] = None
     noise_std: float = 0.0
@@ -290,10 +300,17 @@ def build_timeline_kz1a(
     - 3rd stage ignition: T+192.1s (altitude ~133.8km)
     - 3rd stage separation: T+284.2s (altitude ~245.5km)
     - 4th stage ignition: T+287.2s (altitude ~249.7km)
-    - 4th stage shutdown: T+1052.2s (altitude ~700.3km)
-    - SC/LV separation: T+1060.2s
+    - 4th stage shutdown: Dynamic (after BURN2 circularization)
+    - SC/LV separation: After orbit insertion confirmed
+
+    Hohmann Transfer Timeline for 500km SSO:
+    - BURN1 (~287-460s): Raise apoapsis from ~200km to 500km at perigee
+    - COAST (~460-3500s): Coast to apoapsis (half orbital period ~2700s)
+    - BURN2 (~3500-3550s): Circularize at apoapsis (raise perigee to 500km)
+    - SC_sep: After BURN2 completion and orbit confirmation
     """
-    # Official Event Schedule from KZ-1A User Manual
+    # Event Schedule with Hohmann transfer timing
+    # SC_sep is set very late to allow BURN2 at apoapsis (~3500s after launch)
     events = {
         "S1_ign": 0.0,
         "S1_sep": 83.0,
@@ -303,8 +320,8 @@ def build_timeline_kz1a(
         "S3_ign": 192.1,
         "S3_sep": 284.2,
         "S4_ign": 287.2,
-        "S4_cutoff": 1052.2,  # Official shutdown time
-        "SC_sep": 1060.2,
+        "S4_cutoff": 4000.0,  # Extended to allow BURN2 at apoapsis
+        "SC_sep": 4100.0,     # After orbit insertion confirmed
     }
     
     if event_delay:
@@ -355,31 +372,50 @@ def _stage_index_from_time(t: float, stages: List[KZ1AStage]) -> int:
     return len(stages) - 1
 
 
-def local_level_axes(r: np.ndarray, v: Optional[np.ndarray] = None):
+def local_level_axes(r: np.ndarray, v: Optional[np.ndarray] = None, azimuth_deg: Optional[float] = None):
+    """
+    Compute local level frame axes.
+
+    Args:
+        r: Position vector (ECI)
+        v: Velocity vector (ECI), optional
+        azimuth_deg: Launch azimuth (deg from North, clockwise), optional
+                     If provided, azimuth takes priority over velocity direction.
+
+    Returns:
+        er: Radial (up) unit vector
+        e_tan: Tangential unit vector (azimuth direction or velocity direction)
+        e_cross: Cross-track unit vector
+    """
     r_norm = np.linalg.norm(r)
     er = r / max(r_norm, 1e-9)
-    
+
     # East/North definition
     ez = np.array([0.0, 0.0, 1.0])
     e_east = np.cross(ez, er)
     nrm = np.linalg.norm(e_east)
     if nrm < 1e-9:
-        e_east = np.array([1.0, 0.0, 0.0]) # Polar singularity
+        e_east = np.array([1.0, 0.0, 0.0])  # Polar singularity
     else:
         e_east = e_east / nrm
     e_north = np.cross(er, e_east)
-    
-    # If velocity provided, define 'Tangential' frame (Trajectory frame)
-    # e_tan is horizontal component of velocity
+
+    # If azimuth provided, use azimuth direction (priority over velocity)
+    if azimuth_deg is not None:
+        az_rad = math.radians(azimuth_deg)
+        # Azimuth: 0=North, 90=East, -90=West
+        e_tan = math.cos(az_rad) * e_north + math.sin(az_rad) * e_east
+        return er, e_tan, np.cross(er, e_tan)
+
+    # If velocity provided and significant, use velocity direction
     if v is not None:
         v_horiz = v - np.dot(v, er) * er
         v_h_norm = np.linalg.norm(v_horiz)
         if v_h_norm > 1.0:
             e_tan = v_horiz / v_h_norm
-            # e_cross = np.cross(er, e_tan)
             return er, e_tan, np.cross(er, e_tan)
-            
-    # Fallback to East/North if v is vertical or small
+
+    # Fallback to East/North
     return er, e_east, e_north
 
 
@@ -433,8 +469,8 @@ def s4_guidance_logic(
     """
     S4 two-burn Hohmann-like guidance for 500km circular orbit.
 
-    BURN1: Raise apoapsis to target altitude (burn prograde)
-    COAST: Coast to apoapsis (vr crosses zero from positive to negative)
+    BURN1: Raise apoapsis to target altitude (burn prograde until transfer velocity)
+    COAST: Coast to apoapsis (wait until altitude reaches target and vr~0)
     BURN2: Circularize at apoapsis (burn prograde until circular)
     """
     r_norm = np.linalg.norm(r)
@@ -455,6 +491,26 @@ def s4_guidance_logic(
     if s4_state is None:
         s4_state = {"phase": "BURN1", "burn": True, "prev_vr": vr}
 
+    # 计算达到目标远地点所需的水平速度（考虑当前径向速度）
+    # 使用能量和角动量守恒精确计算
+    # 在远地点: r_a = r_target, vr_a = 0, v_a = h/(r_a) 其中 h = r*vh
+    # 能量守恒: v^2/2 - mu/r = v_a^2/2 - mu/r_a
+    # 角动量守恒: r*vh = r_a*v_a
+    # 联立求解 vh:
+    # v_a = r*vh/r_a
+    # (vr^2 + vh^2)/2 - mu/r = (r*vh/r_a)^2/2 - mu/r_a
+    # vh^2 * (1 - (r/r_a)^2) = 2*mu*(1/r - 1/r_a) - vr^2
+    r_apogee = r_target
+    ratio_sq = (r_norm / r_apogee) ** 2
+    rhs = 2 * mu * (1/r_norm - 1/r_apogee) - vr*vr
+    if rhs > 0 and (1 - ratio_sq) > 0:
+        vh_needed = math.sqrt(rhs / (1 - ratio_sq))
+    else:
+        # Fallback to simple Hohmann formula
+        a_transfer = (r_norm + r_apogee) / 2
+        vh_needed = math.sqrt(mu * (2/r_norm - 1/a_transfer))
+    v_transfer_target = math.sqrt(vh_needed*vh_needed + vr*vr)
+
     phase = s4_state["phase"]
     burn = False
     pitch_cmd = 0.0
@@ -465,22 +521,24 @@ def s4_guidance_logic(
         pitch_cmd = -vr / 30.0  # Small vr damping to stay near-horizontal
         pitch_cmd = max(-5.0, min(5.0, pitch_cmd))
 
-        # Transition when apoapsis reaches target (account for overshoot)
-        if ha >= h_target - 10e3:
+        # 使用目标速度条件：当速度达到转移轨道所需速度时结束BURN1
+        v_err = v_transfer_target - v_norm
+        if v_err <= 0:
             s4_state["phase"] = "COAST"
             s4_state["prev_vr"] = vr
             burn = False
 
     elif phase == "COAST":
-        # Coast to apoapsis - wait until near apoapsis altitude with small vr
+        # Coast to apoapsis - wait until vr crosses zero (at apoapsis)
         burn = False
         pitch_cmd = 0.0
 
         prev_vr = s4_state.get("prev_vr", vr)
-        # At apoapsis: altitude near target AND vr crosses from positive to negative
-        near_apoapsis_alt = h > h_target * 0.95
+        # At apoapsis: vr crosses from positive to negative (or near zero)
         vr_crossing_down = prev_vr > 0 and vr <= 0
-        at_apoapsis = near_apoapsis_alt and vr_crossing_down
+        # 也检查高度是否接近远地点（ha）
+        near_apoapsis = h > ha * 0.98 if ha > 0 else False
+        at_apoapsis = vr_crossing_down or (near_apoapsis and abs(vr) < 10)
         s4_state["prev_vr"] = vr
 
         if at_apoapsis:
@@ -489,16 +547,16 @@ def s4_guidance_logic(
     elif phase == "BURN2":
         # Circularize at apoapsis - burn prograde
         burn = True
-        # Target circular velocity at current altitude
-        v_circ = math.sqrt(mu / r_norm)
-        v_err = v_circ - v_norm
+        # Target circular velocity at CURRENT altitude (where we actually are)
+        v_circ_current = math.sqrt(mu / r_norm)
+        v_err = v_circ_current - v_norm
 
         # Burn prograde (horizontal) with small vr correction
         pitch_cmd = -vr / 10.0
         pitch_cmd = max(-10.0, min(10.0, pitch_cmd))
 
-        # Stop when velocity matches circular (within 2 m/s)
-        if v_err < 2.0:
+        # 圆化条件：速度达到当前高度的圆轨道速度，或偏心率足够小
+        if v_err <= 0 or ecc < 0.001:
             s4_state["phase"] = "DONE"
             burn = False
 
@@ -510,6 +568,88 @@ def s4_guidance_logic(
     u_cmd = build_dir_from_pitch(er, e_tan, pitch_cmd)
 
     status = f"S4_{phase}: h={h/1000:.1f}km, vr={vr:.0f}m/s, ha={ha/1000:.0f}km, e={ecc:.4f}"
+
+    return u_cmd, pitch_cmd, status, s4_state
+
+
+def s4_suborbital_guidance(
+    r: np.ndarray,
+    v: np.ndarray,
+    cfg: KZ1AConfig,
+    t: float,
+    s4_ign_t: float,
+    s4_state: dict = None
+) -> Tuple[np.ndarray, float, str, dict]:
+    """
+    S4 亚轨道/安全落区制导。
+
+    策略：短暂点火后滑行，让火箭沿弹道轨迹下降到安全落区。
+    - BURN: 短暂点火（约100s）建立亚轨道弹道
+    - COAST: 滑行至远地点
+    - DESCENT: 无动力下降至地面
+    """
+    r_norm = np.linalg.norm(r)
+    h = r_norm - Re
+    er = r / max(r_norm, 1e-9)
+    vr = np.dot(v, er)
+    v_norm = np.linalg.norm(v)
+
+    _, e_tan, _ = local_level_axes(r, v)
+
+    if s4_state is None:
+        s4_state = {"phase": "BURN", "burn": True, "burn_start_t": t}
+
+    phase = s4_state["phase"]
+    burn = False
+    pitch_cmd = 0.0
+
+    # 亚轨道制导参数
+    burn_duration = 100.0  # 短暂点火100s
+    target_apogee_km = 250.0  # 目标远地点250km
+
+    if phase == "BURN":
+        burn = True
+        # 俯仰角：略微向上以建立弹道轨迹
+        pitch_cmd = 5.0 - vr / 50.0  # 小的vr阻尼
+        pitch_cmd = max(-10.0, min(15.0, pitch_cmd))
+
+        # 检查是否达到点火时长或目标远地点
+        burn_elapsed = t - s4_state.get("burn_start_t", t)
+        orb = estimate_orbit_from_state(r, v)
+        ha_km = (orb["ra_m"] - Re) / 1000.0 if orb["ra_m"] > 0 else h / 1000.0
+
+        if burn_elapsed >= burn_duration or ha_km >= target_apogee_km:
+            s4_state["phase"] = "COAST"
+            burn = False
+
+    elif phase == "COAST":
+        burn = False
+        pitch_cmd = 0.0
+
+        # 检查是否到达远地点（vr从正变负）
+        prev_vr = s4_state.get("prev_vr", vr)
+        at_apogee = prev_vr > 0 and vr <= 0
+        s4_state["prev_vr"] = vr
+
+        if at_apogee or h < 100e3:  # 到达远地点或高度低于100km
+            s4_state["phase"] = "DESCENT"
+
+    elif phase == "DESCENT":
+        burn = False
+        pitch_cmd = 0.0
+
+        # 检查是否落地
+        if h <= 0:
+            s4_state["phase"] = "LANDED"
+
+    elif phase == "LANDED":
+        burn = False
+        pitch_cmd = 0.0
+
+    s4_state["burn"] = burn
+    u_cmd = build_dir_from_pitch(er, e_tan, pitch_cmd)
+
+    status = f"S4_SUB_{phase}: h={h/1000:.1f}km, vr={vr:.0f}m/s"
 
     return u_cmd, pitch_cmd, status, s4_state
 
@@ -547,20 +687,32 @@ def estimate_orbit_from_state(r: np.ndarray, v: np.ndarray, mu_val: float = mu) 
 def _apply_tvc(u_des: np.ndarray, t: float, dt: float, prev: Optional[np.ndarray], fault: Optional[FaultProfile]):
     """Apply TVC rate limits and fault logic."""
     u_des = u_des / max(np.linalg.norm(u_des), 1e-9)
-    
-    # Fault: Stuck TVC
+
+    # Fault: Stuck TVC - 在卡滞窗口内，TVC固定在某个偏移角度
     if fault and fault.tvc_stick_window:
         t0, dur = fault.tvc_stick_window
-        if t0 is not None and dur is not None and (t0 <= t <= t0 + dur) and prev is not None:
-            return prev
+        if t0 is not None and dur is not None and (t0 <= t <= t0 + dur):
+            stuck_angle_rad = math.radians(fault.tvc_stuck_angle_deg)
+            if abs(stuck_angle_rad) > 1e-6:
+                # 在俯仰平面内旋转推力方向，模拟TVC卡滞
+                c = math.cos(stuck_angle_rad)
+                s = math.sin(stuck_angle_rad)
+                # 绕y轴旋转（俯仰方向偏移）
+                R_stuck = np.array([[c, 0, s], [0, 1, 0], [-s, 0, c]])
+                u_stuck = R_stuck @ u_des
+                return u_stuck / max(np.linalg.norm(u_stuck), 1e-9)
+            elif prev is not None:
+                return prev
 
     if prev is None:
         return u_des
-        
+
     # Rate limit (Fault-based or nominal)
     rate_limit = 10.0 # deg/s nominal
     if fault and fault.tvc_rate_lim_deg_s is not None:
-        rate_limit = fault.tvc_rate_lim_deg_s
+        # 只有在故障发生后才应用速率限制
+        if t >= fault.t_fault_s:
+            rate_limit = fault.tvc_rate_lim_deg_s
 
     dot = float(np.clip(np.dot(prev, u_des), -1.0, 1.0))
     ang = math.acos(dot)
@@ -739,20 +891,56 @@ def simulate_kz1a_eci(
         # S1-S3: 开环俯仰角剖面; S4: 闭环制导
         r_now = state[0:3]
         v_now = state[3:6]
-        er, e_tan, _ = local_level_axes(r_now, v_now)
+
+        # 应用传感器偏置到制导输入（仅在故障发生后）
+        # 传感器偏置会导致姿态估计误差，进而影响推力方向
+        if fault.sensor_bias_body is not None and t >= fault.t_fault_s:
+            # 传感器偏置以体坐标系角度表示，转换为ECI坐标系的速度方向偏差
+            bias_rad = fault.sensor_bias_body  # [roll, pitch, yaw] in radians
+            pitch_bias = bias_rad[1]  # 俯仰偏置
+            if abs(pitch_bias) > 1e-6:
+                # 在速度方向上施加偏置旋转
+                v_norm = np.linalg.norm(v_now)
+                if v_norm > 1.0:
+                    r_norm = np.linalg.norm(r_now)
+                    er = r_now / max(r_norm, 1e-9)
+                    # 将速度分解为径向和切向分量
+                    vr = np.dot(v_now, er)
+                    v_tan = v_now - vr * er
+                    v_tan_norm = np.linalg.norm(v_tan)
+                    if v_tan_norm > 1.0:
+                        e_tan = v_tan / v_tan_norm
+                        # 应用俯仰偏置：旋转速度方向
+                        c = math.cos(pitch_bias)
+                        s = math.sin(pitch_bias)
+                        # 新的径向和切向速度分量
+                        vr_biased = vr * c + v_tan_norm * s
+                        vt_biased = v_tan_norm * c - vr * s
+                        v_now = vr_biased * er + vt_biased * e_tan
 
         if s4_state is not None:
-            # S4两次点火制导
-            u_des, pitch_cmd_deg, _, s4_state = s4_guidance_logic(
-                r_now, v_now, cfg, t, events.get("S4_ign", 287.2), s4_state
-            )
+            # S4制导 - 根据制导模式选择
+            er, e_tan, _ = local_level_axes(r_now, v_now)
+            if cfg.guidance_mode == "suborbital":
+                u_des, pitch_cmd_deg, _, s4_state = s4_suborbital_guidance(
+                    r_now, v_now, cfg, t, events.get("S4_ign", 287.2), s4_state
+                )
+            else:
+                u_des, pitch_cmd_deg, _, s4_state = s4_guidance_logic(
+                    r_now, v_now, cfg, t, events.get("S4_ign", 287.2), s4_state
+                )
             # Update burn flag from guidance
             s4_burn_on = s4_state.get("burn", False) and prop_left[stage_idx] > 0
+            # 重新计算推力（制导可能关闭了推力）
+            if not s4_burn_on:
+                thrust_mag = 0.0
+                mdot = 0.0
             # Check for MECO (DONE phase)
             if s4_state.get("phase") == "DONE" and events.get("S4_cutoff", 99999) > t:
                 events["S4_cutoff"] = t
         else:
-            # S1-S3开环制导：按俯仰角剖面
+            # S1-S3开环制导：按俯仰角剖面，使用发射方位角
+            er, e_tan, _ = local_level_axes(r_now, v_now, cfg.launch_azimuth_deg)
             profile = cfg.pitch_profile if cfg.pitch_profile else DEFAULT_PITCH_PROFILE
             pitch_cmd_deg = interp_profile(t, profile)
             u_des = build_dir_from_pitch(er, e_tan, pitch_cmd_deg)

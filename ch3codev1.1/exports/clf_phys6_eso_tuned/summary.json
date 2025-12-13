@@ -1,152 +1,152 @@
 {
   "mode": "simple+",
-  "centers": 36,
-  "sigma": 1.0585390923682738,
+  "centers": 48,
+  "sigma": 0.37927347365367725,
   "ridge_lam": 0.01,
   "hyperparams": {
-    "sigma_star": 1.0585390923682738,
+    "sigma_star": 0.37927347365367725,
     "lambda_star": 0.01,
-    "val_best_err": 0.09848484848484848,
+    "val_best_err": 0.02040816326530612,
     "grid_evaluations": 15
   },
-  "acc": 0.9022900763358779,
-  "macro_precision": 0.8268589523063553,
-  "macro_recall": 0.8953820219158422,
-  "macro_f1": 0.8597573180949781,
+  "acc": 0.9410569105691057,
+  "macro_precision": 0.867642087981071,
+  "macro_recall": 0.9421074481074481,
+  "macro_f1": 0.9033427632700698,
   "confusion": [
     [
-      134,
-      6,
+      108,
       0,
-      7,
-      9,
-      19
+      0,
+      0,
+      0,
+      17
     ],
     [
-      9,
-      178,
+      3,
+      135,
       0,
+      2,
+      0,
+      0
+    ],
+    [
       1,
       0,
-      0
-    ],
-    [
+      38,
       0,
       0,
-      64,
-      3,
-      0,
-      0
-    ],
-    [
-      0,
-      0,
-      0,
-      27,
-      0,
-      0
-    ],
-    [
-      4,
-      0,
-      0,
-      0,
-      172,
       0
     ],
     [
       6,
       0,
       0,
+      34,
+      0,
+      0
+    ],
+    [
       0,
       0,
-      16
+      0,
+      0,
+      139,
+      0
+    ],
+    [
+      0,
+      0,
+      0,
+      0,
+      0,
+      9
     ]
   ],
   "window_level": {
-    "acc": 0.9022900763358779,
-    "macroF1": 0.8597573180949781
+    "acc": 0.9410569105691057,
+    "macroF1": 0.9033427632700698
   },
   "flight_level": {
-    "acc": 0.9230769230769231,
-    "macroF1": 0.9222441039898829,
+    "acc": 0.9637681159420289,
+    "macroF1": 0.9551459275670021,
     "confusion": [
       [
-        15,
+        28,
         0,
         0,
         0,
         0,
-        5
+        2
+      ],
+      [
+        0,
+        29,
+        0,
+        1,
+        0,
+        0
       ],
       [
         1,
-        19,
-        0,
-        0,
-        0,
-        0
-      ],
-      [
-        0,
-        0,
-        18,
-        0,
-        0,
-        0
-      ],
-      [
-        0,
-        0,
-        0,
-        13,
-        0,
-        0
-      ],
-      [
-        0,
-        0,
-        0,
         0,
         20,
+        0,
+        0,
         0
       ],
       [
-        2,
+        1,
+        0,
+        0,
+        19,
+        0,
+        0
+      ],
+      [
         0,
         0,
         0,
         0,
-        11
+        30,
+        0
+      ],
+      [
+        0,
+        0,
+        0,
+        0,
+        0,
+        7
       ]
     ]
   },
-  "nominal_threshold": 1.0,
+  "nominal_threshold": 1.481347746306894,
   "diagnostics": {
-    "nominal_sigma": 1.5,
-    "R_nom": 1.0,
-    "train_nom_dist_mean": 1.8760997647022866,
-    "train_nom_dist_std": 0.9637789163425161,
-    "R_delay_min": 3.8036575973873186,
-    "flight_nominal_min_ratio": 0.75,
-    "flight_fault_min_ratio": 0.48,
-    "flight_delay_min_ratio": 0.1,
+    "nominal_sigma": 0.0,
+    "R_nom": 1.481347746306894,
+    "train_nom_dist_mean": 1.481347746306894,
+    "train_nom_dist_std": 0.760505507821263,
+    "R_delay_min": 3.00235876194942,
+    "flight_nominal_min_ratio": 0.7,
+    "flight_fault_min_ratio": 0.15,
+    "flight_delay_min_ratio": 0.3,
     "flight_recall_per_class": [
-      0.75,
+      0.9333333333333333,
+      0.9666666666666667,
+      0.9523809523809523,
       0.95,
       1.0,
-      1.0,
-      1.0,
-      0.8461538461538461
+      1.0
     ],
-    "oversample_sensor_bias": 2.0
+    "oversample_sensor_bias": 1.0
   },
-  "nominal_sigma": 1.5,
+  "nominal_sigma": 0.0,
   "preprocess": {
     "winsor_pct": 0.02,
     "log_energy": true,
-    "use_pairwise": true,
+    "use_pairwise": false,
     "dim_reduction": "lda",
-    "channel_mode": "phys6_eso"
+    "channel_mode": "raw_z"
   }
 }

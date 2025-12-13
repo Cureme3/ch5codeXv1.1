@@ -68,7 +68,20 @@
       "Bash(PYTHONPATH=\"/mnt/d/python projects/ch4codeXv1.1\" /mnt/d/Users/anaconda3/envs/chap3/python.exe:*)",
       "Bash(explorer.exe \"D:\\python projects\\ch5codeXv1.1\\outputs\\figures\\ch5\")",
       "Bash(explorer.exe \"D:\\python projects\\ch5codeXv1.1\\outputs\\figures\\diagnosis\")",
-      "Bash(explorer.exe \"D:\\python projects\\ch5codeXv1.1\\outputs\\figures\\diagnosis\\diag_F1_thrust_deg15_eta0.5.png\")"
+      "Bash(explorer.exe \"D:\\python projects\\ch5codeXv1.1\\outputs\\figures\\diagnosis\\diag_F1_thrust_deg15_eta0.5.png\")",
+      "Bash(for eta in 0.2 0.3 0.5)",
+      "Bash(do:*)",
+      "Bash(done)",
+      "WebSearch",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git config:*)",
+      "Bash(git checkout:*)",
+      "Bash(pkill:*)",
+      "Bash(npm install:*)",
+      "Bash(sudo npm install:*)",
+      "Bash(PYTHONDONTWRITEBYTECODE=1 /mnt/d/Users/anaconda3/envs/chap3/python.exe:*)",
+      "Bash(rm:*)"
     ],
     "deny": [],
     "ask": []

@@ -1,152 +1,147 @@
 {
   "mode": "simple+",
   "centers": 36,
-  "sigma": 1.0585390923682738,
-  "ridge_lam": 0.01,
+  "sigma": 1.8826231003174998,
+  "ridge_lam": 0.0005,
   "hyperparams": {
-    "sigma_star": 1.0585390923682738,
-    "lambda_star": 0.01,
-    "val_best_err": 0.09848484848484848,
+    "sigma_star": 1.8826231003174998,
+    "lambda_star": 0.0005,
+    "val_best_err": 0.51434034416826,
     "grid_evaluations": 15
   },
-  "acc": 0.9022900763358779,
-  "macro_precision": 0.8268589523063553,
-  "macro_recall": 0.8953820219158422,
-  "macro_f1": 0.8597573180949781,
+  "acc": 0.5282442748091603,
+  "macro_precision": 0.5065894689518243,
+  "macro_recall": 0.6767977761479668,
+  "macro_f1": 0.5794529684620051,
   "confusion": [
     [
-      134,
-      6,
-      0,
-      7,
-      9,
+      23,
+      53,
+      16,
+      26,
+      26,
+      31
+    ],
+    [
+      1,
+      133,
+      1,
+      16,
+      18,
       19
     ],
     [
+      0,
+      0,
+      60,
+      6,
+      1,
+      0
+    ],
+    [
+      0,
+      0,
+      3,
+      24,
+      0,
+      0
+    ],
+    [
+      14,
+      53,
+      14,
       9,
-      178,
+      85,
+      1
+    ],
+    [
       0,
       1,
       0,
-      0
-    ],
-    [
       0,
       0,
-      64,
-      3,
-      0,
-      0
-    ],
-    [
-      0,
-      0,
-      0,
-      27,
-      0,
-      0
-    ],
-    [
-      4,
-      0,
-      0,
-      0,
-      172,
-      0
-    ],
-    [
-      6,
-      0,
-      0,
-      0,
-      0,
-      16
+      21
     ]
   ],
   "window_level": {
-    "acc": 0.9022900763358779,
-    "macroF1": 0.8597573180949781
+    "acc": 0.5282442748091603,
+    "macroF1": 0.5794529684620051
   },
   "flight_level": {
-    "acc": 0.9326923076923077,
-    "macroF1": 0.9353590979975075,
+    "acc": 0.7115384615384616,
+    "macroF1": 0.7849249766216632,
     "confusion": [
       [
-        19,
+        16,
+        2,
         0,
-        0,
-        0,
-        1,
-        0
-      ],
-      [
-        1,
-        19,
-        0,
-        0,
+        2,
         0,
         0
       ],
       [
-        0,
-        0,
-        18,
-        0,
-        0,
-        0
-      ],
-      [
-        0,
-        0,
-        0,
+        7,
         13,
         0,
+        0,
+        0,
+        0
+      ],
+      [
+        2,
+        0,
+        16,
+        0,
+        0,
         0
       ],
       [
         0,
         0,
+        1,
+        12,
         0,
-        0,
-        20,
         0
       ],
       [
-        5,
+        14,
+        0,
+        0,
+        0,
+        6,
+        0
+      ],
+      [
+        2,
         0,
         0,
         0,
         0,
-        8
+        11
       ]
     ]
   },
-  "nominal_threshold": 1.0,
+  "nominal_threshold": null,
   "diagnostics": {
-    "nominal_sigma": 1.5,
-    "R_nom": 1.0,
-    "train_nom_dist_mean": 1.8760997647022866,
-    "train_nom_dist_std": 0.9637789163425161,
-    "R_delay_min": 3.8036575973873186,
     "flight_nominal_min_ratio": 0.7,
     "flight_fault_min_ratio": 0.4,
     "flight_delay_min_ratio": 0.55,
     "flight_recall_per_class": [
-      0.95,
-      0.95,
-      1.0,
-      1.0,
-      1.0,
-      0.6153846153846154
+      0.8,
+      0.65,
+      0.8888888888888888,
+      0.9230769230769231,
+      0.3,
+      0.8461538461538461
     ],
-    "oversample_sensor_bias": 2.0
+    "oversample_sensor_bias": 1.0
   },
   "nominal_sigma": 1.5,
   "preprocess": {
     "winsor_pct": 0.02,
-    "log_energy": true,
-    "use_pairwise": true,
-    "dim_reduction": "lda",
-    "channel_mode": "phys6_eso"
+    "log_energy": false,
+    "use_pairwise": false,
+    "dim_reduction": "pca",
+    "channel_mode": "raw_z"
   }
 }

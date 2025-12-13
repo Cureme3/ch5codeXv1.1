@@ -115,11 +115,11 @@ class Dynamics3DOF:
     state_dim = 7
     control_dim = 3
 
-    def __init__(self, dt: float = 0.5, rocket_params=None, scenario=None):
+    def __init__(self, dt: float = 0.01, rocket_params=None, scenario=None):
         self.dt = dt
         self.scenario = scenario
 
-        cfg = KZ1AConfig(preset="nasaspaceflight", dt=dt, t_end=1100.0)
+        cfg = KZ1AConfig(preset="nasaspaceflight", dt=dt, t_end=4000.0)
         sim_data = simulate_kz1a_eci(cfg, fault=None)
         if sim_data is None:
             raise RuntimeError("simulate_kz1a_eci returned None")

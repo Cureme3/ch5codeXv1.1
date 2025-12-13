@@ -270,8 +270,9 @@ def _worker_job(job):
         if end_idx > n_pts:
             end_idx = n_pts
             
-        # Weak Fault Filtering
-        if channels_nom_roi and (not is_delay_cls):
+        # Weak Fault Filtering (skip for delay and sensor_bias classes)
+        is_sensor_bias_cls = (name == "sensor_bias_0p2")
+        if channels_nom_roi and (not is_delay_cls) and (not is_sensor_bias_cls):
             # Calculate max relative RMS diff across channels
             max_delta = 0.0
             for k, ch_roi in enumerate(channels_roi):

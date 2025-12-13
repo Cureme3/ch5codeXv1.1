@@ -62,6 +62,7 @@ class ConstraintBounds:
     max_normal_load: float
     thrust_cone_deg: float
     thrust_bounds: Dict[int, tuple[float, float]]
+    fault_thrust_drop: float = 0.0  # Relative thrust drop due to fault (0.05 = 5% loss)
     terminal_state_target: Optional[np.ndarray] = None
     terminal_weights: Optional[np.ndarray] = None
     require_orbit: bool = True  # 是否要求入轨（控制终端轨道精度项）
@@ -298,36 +299,27 @@ class SOCPProblemBuilder:
         else:
             # === ORBIT INSERTION MODE (RETAIN/DEGRADED) ===
             # Target: Specific altitude, circular velocity, and flight path angle -> 0
+            # For stable orbit: v >= v_circular and gamma ~ 0
 
-            # Altitude error
+            # Altitude error (scale by 10km for very strong constraint)
             h_final_linear = r_hat @ pos_final - R_EARTH  # Altitude in meters
-            h_error_scaled = (h_final_linear - target_h_m) / 20000.0  # Scale by 20km for stronger gradient
+            h_error_scaled = (h_final_linear - target_h_m) / 10000.0
 
-            # Velocity magnitude error
+            # Velocity magnitude error - CRITICAL for circular orbit
+            # Must reach circular velocity for stable orbit
             v_final_linear = v_hat @ vel_final  # Velocity in m/s (projected)
-            v_error_scaled = (v_final_linear - target_v_ms) / 200.0  # Scale by 200m/s for stronger constraint
+            v_error_scaled = (v_final_linear - target_v_ms) / 50.0  # Scale by 50m/s for very strong constraint
 
-            # === KEY: Flight Path Angle (FPA) constraint for orbit insertion ===
-            # FPA = arctan(v_radial / v_tangential)
-            # For circular orbit: FPA should be 0 (v_radial = 0)
-            # Linear approximation: gamma ≈ v_radial / v_tangential (for small angles)
-            # Target: v_radial -> 0 for circular orbit
-
-            # Radial velocity component (should approach 0 for circular orbit)
-            vr_final = r_hat @ vel_final  # Radial velocity (positive = away from Earth)
-            # For orbit insertion, target FPA is typically 0 (horizontal)
-            # Target radial velocity = v * sin(target_fpa)
+            # Radial velocity (should be ~0 for circular orbit, i.e., FPA = 0)
+            vr_final = r_hat @ vel_final
             target_vr = target_v_ms * np.sin(target_fpa_rad)
-
-            # FPA error scaled (penalize radial velocity deviation from target)
-            # Scale by 50 m/s for stronger FPA constraint (critical for orbit insertion)
-            fpa_error_scaled = (vr_final - target_vr) / 50.0
+            fpa_error_scaled = (vr_final - target_vr) / 30.0  # Scale by 30m/s
 
             # Combined terminal error: [altitude, velocity, flight_path_angle]
             terminal_error = cp.hstack([h_error_scaled, v_error_scaled, fpa_error_scaled])
 
-            # Strong terminal guidance for orbit insertion - FPA must approach 0
-            terminal_weight_factor = 200.0  # Increased from 50.0
+            # Very strong terminal guidance for orbit insertion
+            terminal_weight_factor = 2000.0  # Much stronger for orbit insertion
             terminal_term = base_terminal_weight * terminal_weight_factor * cp.sum_squares(terminal_error)
 
         objective = cp.Minimize(state_term + control_term + slack_term + terminal_term)

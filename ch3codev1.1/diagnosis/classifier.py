@@ -168,7 +168,7 @@ def simple_train_rbf(
     s0 = _robust_sigma(Xtr, centers)
 
     # 构建 5×3 网格: σ_grid (5 values) × λ_grid (3 values) = 15 evaluations
-    sigma_multipliers = [0.7, 0.85, 1.0, 1.15, 1.3]
+    sigma_multipliers = [0.2, 0.5, 1.0, 2.0, 4.0]  # 宽范围展示误差变化趋势
     sigma_grid = [s0 * m for m in sigma_multipliers]
     # 从原 lam_grid 中选择 3 个有代表性的值
     if len(lam_grid) >= 3:
@@ -199,13 +199,14 @@ def simple_train_rbf(
             pred_val = np.argmax(Phi_val @ W_try, axis=1)
             err_val = float(np.mean(pred_val != Yval))
 
-            # 更新最优
-            if err_val < best_err:
+            # 更新最优（限制σ在合理范围内：0.5*s0 到 1.5*s0）
+            sig_ratio = sig / s0
+            if err_val < best_err and 0.5 <= sig_ratio <= 1.5:
                 best_err = err_val
                 best_sigma = sig
                 best_lam = lam
 
-            curve.append(best_err)
+            curve.append(err_val)  # 记录实际误差而非累计最优
             print(f"[Grid {eval_count:02d}/15] σ={sig:.3g}, λ={lam:.1e}, val_err={err_val:.4f}, best={best_err:.4f}")
 
     # 用最优超参数在全部训练集上重训

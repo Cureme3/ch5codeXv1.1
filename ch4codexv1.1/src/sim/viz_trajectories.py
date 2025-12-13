@@ -9,6 +9,13 @@ This module provides unified interface for extracting three trajectories:
 
 All trajectories are interpolated to a common time grid for easy visualization.
 本模块服务于第四章多故障、多严重度的轨迹可视化。
+
+Updated for 4000s simulation with Hohmann transfer orbit insertion:
+- S4 ignition at ~287s
+- BURN1: Raise apoapsis to 500km
+- COAST: Coast to apoapsis (~2700s)
+- BURN2: Circularize at apoapsis (~3500s)
+- Total simulation: 4000s
 """
 
 from __future__ import annotations
@@ -42,11 +49,12 @@ class ThreeTrajectories:
     """Container for three trajectories (nominal/fault/reconfig) data.
 
     所有轨迹已插值到统一时间网格 t 上，供第四章可视化使用。
+    支持4000s仿真时长和ECI坐标系3D轨迹。
 
     Attributes
     ----------
     t : np.ndarray
-        统一时间网格 [s]
+        统一时间网格 [s]，范围 0-4000s
     h_nom, h_fault, h_reconfig : np.ndarray
         高度 [km]
     v_nom, v_fault, v_reconfig : np.ndarray
@@ -59,6 +67,10 @@ class ThreeTrajectories:
         法向过载 [g]
     gamma_nom, gamma_fault, gamma_reconfig : np.ndarray
         弹道倾角 [deg]
+    r_eci_nom, r_eci_fault, r_eci_reconfig : np.ndarray
+        ECI位置向量 [m]，形状 (N, 3)
+    v_eci_nom, v_eci_fault, v_eci_reconfig : np.ndarray
+        ECI速度向量 [m/s]，形状 (N, 3)
     fault_id : str
         故障场景 ID
     eta : float
@@ -93,9 +105,17 @@ class ThreeTrajectories:
     gamma_fault: np.ndarray
     gamma_reconfig: np.ndarray
 
-    fault_id: str
-    eta: float
-    mission_domain: MissionDomain
+    # ECI 3D轨迹数据
+    r_eci_nom: np.ndarray = None
+    r_eci_fault: np.ndarray = None
+    r_eci_reconfig: np.ndarray = None
+    v_eci_nom: np.ndarray = None
+    v_eci_fault: np.ndarray = None
+    v_eci_reconfig: np.ndarray = None
+
+    fault_id: str = ""
+    eta: float = 0.0
+    mission_domain: MissionDomain = None
 
 
 def _interp_to_grid(t_orig: np.ndarray, y_orig: np.ndarray, t_grid: np.ndarray) -> np.ndarray:
@@ -334,13 +354,13 @@ def build_three_trajectories(
             v_horizontal = np.sqrt(max(0, v_norm_i**2 - v_radial**2))
             gamma_reconfig_raw[i] = np.degrees(np.arctan2(v_radial, v_horizontal + 1e-6))
 
-    # Determine time grid
+    # Determine time grid - default to 4000s for full Hohmann transfer simulation
     if t_end is None:
         t_end = max(
-            t_nom[-1] if len(t_nom) > 0 else 0,
-            t_fault[-1] if len(t_fault) > 0 else 0,
+            t_nom[-1] if len(t_nom) > 0 else 4000.0,
+            t_fault[-1] if len(t_fault) > 0 else 4000.0,
             reconfig_time[-1] if len(reconfig_time) > 0 else 0,
-            scenario.t_confirm_s + scenario.t_plan_horizon_s + 50.0,
+            4000.0,  # Default to full simulation duration
         )
 
     t_grid = np.arange(0.0, t_end + t_step, t_step)
@@ -383,6 +403,39 @@ def build_three_trajectories(
         n_reconfig_interp[mask] = _interp_to_grid(reconfig_time, n_reconfig_raw, t_grid[mask])
         gamma_reconfig_interp[mask] = _interp_to_grid(reconfig_time, gamma_reconfig_raw, t_grid[mask])
 
+    # Extract ECI position/velocity for 3D trajectory plotting
+    # Nominal ECI data
+    r_eci_nom_raw = nominal.states[:, 0:3]  # (N, 3) in meters
+    v_eci_nom_raw = nominal.states[:, 3:6]  # (N, 3) in m/s
+
+    # Fault ECI data
+    r_eci_fault_raw = fault_sim.states[:, 0:3]
+    v_eci_fault_raw = fault_sim.states[:, 3:6]
+
+    # Reconfig ECI data
+    r_eci_reconfig_raw = reconfig_states[:, 0:3]
+    v_eci_reconfig_raw = reconfig_states[:, 3:6]
+
+    # Interpolate ECI data to grid (component-wise)
+    def interp_eci_to_grid(t_orig, eci_orig, t_grid):
+        """Interpolate 3D ECI vectors to time grid."""
+        result = np.zeros((len(t_grid), 3))
+        for i in range(3):
+            result[:, i] = _interp_to_grid(t_orig, eci_orig[:, i], t_grid)
+        return result
+
+    r_eci_nom_interp = interp_eci_to_grid(t_nom, r_eci_nom_raw, t_grid)
+    v_eci_nom_interp = interp_eci_to_grid(t_nom, v_eci_nom_raw, t_grid)
+    r_eci_fault_interp = interp_eci_to_grid(t_fault, r_eci_fault_raw, t_grid)
+    v_eci_fault_interp = interp_eci_to_grid(t_fault, v_eci_fault_raw, t_grid)
+
+    # Reconfig ECI: use fault trajectory outside planning window, SCvx inside
+    r_eci_reconfig_interp = r_eci_fault_interp.copy()
+    v_eci_reconfig_interp = v_eci_fault_interp.copy()
+    if np.any(mask) and len(reconfig_time) > 0:
+        r_eci_reconfig_interp[mask] = interp_eci_to_grid(reconfig_time, r_eci_reconfig_raw, t_grid[mask])
+        v_eci_reconfig_interp[mask] = interp_eci_to_grid(reconfig_time, v_eci_reconfig_raw, t_grid[mask])
+
     print(f"[viz] Trajectory construction done: t=[0, {t_end:.1f}]s, dt={t_step}s, {len(t_grid)} points")
 
     return ThreeTrajectories(
@@ -405,6 +458,12 @@ def build_three_trajectories(
         gamma_nom=gamma_nom_interp,
         gamma_fault=gamma_fault_interp,
         gamma_reconfig=gamma_reconfig_interp,
+        r_eci_nom=r_eci_nom_interp,
+        r_eci_fault=r_eci_fault_interp,
+        r_eci_reconfig=r_eci_reconfig_interp,
+        v_eci_nom=v_eci_nom_interp,
+        v_eci_fault=v_eci_fault_interp,
+        v_eci_reconfig=v_eci_reconfig_interp,
         fault_id=fault_id,
         eta=eta,
         mission_domain=mission_domain,
@@ -425,3 +484,141 @@ def get_default_fault_ids() -> List[str]:
 def get_default_etas() -> List[float]:
     """Return default eta values for multi-severity analysis."""
     return [0.2, 0.5, 0.8]
+
+
+def load_three_trajectories_from_npz(
+    fault_id: str,
+    eta: float,
+    data_dir: Optional[Path] = None,
+    t_step: float = 1.0,
+) -> ThreeTrajectories:
+    """从已生成的 npz 文件加载三轨迹数据（快速模式）。
+
+    Parameters
+    ----------
+    fault_id : str
+        故障场景 ID（如 "F1_thrust_deg15"）
+    eta : float
+        故障严重度
+    data_dir : Path, optional
+        数据目录，默认 outputs/data/ch4_trajectories_replan
+    t_step : float
+        时间网格步长 [s]
+
+    Returns
+    -------
+    ThreeTrajectories
+        从 npz 文件加载的三轨迹数据
+    """
+    if data_dir is None:
+        data_dir = ROOT / "outputs" / "data" / "ch4_trajectories_replan"
+
+    # 文件名格式: F1_eta02_openloop.npz, F1_eta02_replan.npz
+    fault_short = fault_id.split("_")[0]  # F1_thrust_deg15 -> F1
+    eta_str = f"{int(eta*10):02d}"  # 0.2 -> 02
+
+    nom_path = data_dir / "nominal.npz"
+    openloop_path = data_dir / f"{fault_short}_eta{eta_str}_openloop.npz"
+    replan_path = data_dir / f"{fault_short}_eta{eta_str}_replan.npz"
+
+    # 加载数据
+    nom_data = np.load(nom_path)
+    openloop_data = np.load(openloop_path)
+    replan_data = np.load(replan_path)
+
+    # 提取时间和轨迹数据（键名为 't' 而非 'time'）
+    t_nom = nom_data['t']
+    t_fault = openloop_data['t']
+    t_replan = replan_data['t']
+
+    # 确定统一时间网格
+    t_end = max(t_nom[-1], t_fault[-1], t_replan[-1], 4000.0)
+    t_grid = np.arange(0.0, t_end + t_step, t_step)
+
+    # 插值函数
+    def interp(t_orig, y_orig, t_grid):
+        return np.interp(t_grid, t_orig, y_orig)
+
+    def interp_eci(t_orig, eci_orig, t_grid):
+        result = np.zeros((len(t_grid), 3))
+        for i in range(3):
+            result[:, i] = np.interp(t_grid, t_orig, eci_orig[:, i])
+        return result
+
+    # 从ECI数据计算速度
+    def compute_velocity_from_eci(v_eci):
+        """从ECI速度向量计算速度大小 (km/s)"""
+        return np.linalg.norm(v_eci, axis=1) / 1000.0
+
+    # 标称轨迹
+    h_nom = interp(t_nom, nom_data['altitude'], t_grid)
+    v_eci_nom_raw = nom_data['v_eci']
+    v_nom = interp(t_nom, compute_velocity_from_eci(v_eci_nom_raw), t_grid)
+    s_nom = interp(t_nom, nom_data['downrange'], t_grid)
+    q_nom = np.zeros_like(t_grid)  # 动压需要大气模型，暂时置零
+    n_nom = np.ones_like(t_grid)   # 过载暂时置1
+    gamma_nom = np.zeros_like(t_grid)
+
+    # 故障开环轨迹
+    h_fault = interp(t_fault, openloop_data['altitude'], t_grid)
+    v_eci_fault_raw = openloop_data['v_eci']
+    v_fault = interp(t_fault, compute_velocity_from_eci(v_eci_fault_raw), t_grid)
+    s_fault = interp(t_fault, openloop_data['downrange'], t_grid)
+    q_fault = np.zeros_like(t_grid)
+    n_fault = np.ones_like(t_grid)
+    gamma_fault = np.zeros_like(t_grid)
+
+    # 重规划轨迹：故障段 + SCvx段
+    h_reconfig = h_fault.copy()
+    v_reconfig = v_fault.copy()
+    s_reconfig = s_fault.copy()
+    q_reconfig = q_fault.copy()
+    n_reconfig = n_fault.copy()
+    gamma_reconfig = gamma_fault.copy()
+
+    # 覆盖SCvx段
+    t0_replan = t_replan[0]
+    tf_replan = t_replan[-1]
+    mask = (t_grid >= t0_replan) & (t_grid <= tf_replan)
+    if np.any(mask):
+        h_reconfig[mask] = interp(t_replan, replan_data['altitude'], t_grid[mask])
+        if 'v_eci' in replan_data:
+            v_eci_replan_raw = replan_data['v_eci']
+            v_reconfig[mask] = interp(t_replan, compute_velocity_from_eci(v_eci_replan_raw), t_grid[mask])
+        s_reconfig[mask] = interp(t_replan, replan_data['downrange'], t_grid[mask])
+
+    # ECI数据
+    r_eci_nom = r_eci_fault = r_eci_reconfig = None
+    v_eci_nom = v_eci_fault = v_eci_reconfig = None
+
+    if 'r_eci' in nom_data:
+        r_eci_nom = interp_eci(t_nom, nom_data['r_eci'], t_grid)
+        v_eci_nom = interp_eci(t_nom, nom_data['v_eci'], t_grid)
+    if 'r_eci' in openloop_data:
+        r_eci_fault = interp_eci(t_fault, openloop_data['r_eci'], t_grid)
+        v_eci_fault = interp_eci(t_fault, openloop_data['v_eci'], t_grid)
+        r_eci_reconfig = r_eci_fault.copy()
+        v_eci_reconfig = v_eci_fault.copy()
+        if 'r_eci' in replan_data and np.any(mask):
+            r_eci_reconfig[mask] = interp_eci(t_replan, replan_data['r_eci'], t_grid[mask])
+            v_eci_reconfig[mask] = interp_eci(t_replan, replan_data['v_eci'], t_grid[mask])
+
+    # 任务域
+    domain_str = str(replan_data.get('mission_domain', 'RETAIN'))
+    try:
+        mission_domain = MissionDomain[domain_str]
+    except KeyError:
+        mission_domain = MissionDomain.RETAIN
+
+    return ThreeTrajectories(
+        t=t_grid,
+        h_nom=h_nom, h_fault=h_fault, h_reconfig=h_reconfig,
+        v_nom=v_nom, v_fault=v_fault, v_reconfig=v_reconfig,
+        s_nom=s_nom, s_fault=s_fault, s_reconfig=s_reconfig,
+        q_nom=q_nom, q_fault=q_fault, q_reconfig=q_reconfig,
+        n_nom=n_nom, n_fault=n_fault, n_reconfig=n_reconfig,
+        gamma_nom=gamma_nom, gamma_fault=gamma_fault, gamma_reconfig=gamma_reconfig,
+        r_eci_nom=r_eci_nom, r_eci_fault=r_eci_fault, r_eci_reconfig=r_eci_reconfig,
+        v_eci_nom=v_eci_nom, v_eci_fault=v_eci_fault, v_eci_reconfig=v_eci_reconfig,
+        fault_id=fault_id, eta=eta, mission_domain=mission_domain,
+    )

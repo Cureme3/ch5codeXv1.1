@@ -247,7 +247,7 @@ def main() -> None:
     outdir.mkdir(parents=True, exist_ok=True)
 
     # Instantiate Dynamics3DOF
-    dynamics = Dynamics3DOF(dt=0.5) # dt can be adjusted if needed
+    dynamics = Dynamics3DOF(dt=0.01) # dt can be adjusted if needed
 
     nominal = simulate_full_mission(dt=args.dt)
     discretizer = build_discretizer(cfg, args.nodes, dynamics)

@@ -29,8 +29,8 @@ class NominalResult:
     states: np.ndarray  # (N, 7) [rx, ry, rz, vx, vy, vz, m]
 
 def simulate_nominal(
-    duration_s: float = 1000.0, # Ignored, run_eci determines duration
-    dt: float = 0.5, # Passed to simulate_kz1a_ascent
+    duration_s: float = 4000.0, # Extended to allow S4 Hohmann transfer orbit circularization
+    dt: float = 0.01, # Passed to simulate_kz1a_ascent
     save_csv: bool = True,
     guidance_fn: None = None, # Ignored
     use_fpa_vr_feedback: bool = True,

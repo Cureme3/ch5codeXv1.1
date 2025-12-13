@@ -380,6 +380,62 @@ def main():
             )
             st.plotly_chart(fig3d, width="stretch")
 
+            # ===== 轨道参数显示 =====
+            st.markdown("##### 入轨/降级轨道参数")
+
+            # 从result获取任务域信息
+            domain_info = result.get("mission_domain", {})
+            domain_name = domain_info.get("name", "DEGRADED")
+            h_target = domain_info.get("h_target_km", 300.0)
+            v_target = domain_info.get("v_target_kms", 7.73)
+
+            # 根据任务域计算轨道参数
+            R_EARTH_KM = 6378.137
+            mu = 398600.4418  # km^3/s^2
+
+            # 轨道半长轴 a = R_E + h
+            a_km = R_EARTH_KM + h_target
+            # 轨道周期 T = 2*pi*sqrt(a^3/mu)
+            T_s = 2 * 3.14159265 * ((a_km**3 / mu) ** 0.5)
+            # 圆轨道速度 v = sqrt(mu/a)
+            v_circ = (mu / a_km) ** 0.5
+
+            # 发射点参数（固定值）
+            lat_launch = 40.96
+            lon_launch = 100.28
+            inc_deg = 97.4  # 轨道倾角
+
+            # 升交点赤经（春分6:00，太阳在赤经0°，发射点经度100.28°E）
+            # RAAN ≈ 经度 - 90° + 时角修正 ≈ 83.5°
+            raan_deg = 83.5
+
+            col_orb1, col_orb2 = st.columns(2)
+            with col_orb1:
+                st.markdown("**轨道根数**")
+                st.markdown(f"""
+                | 参数 | 名义值 | 重构值 |
+                |------|--------|--------|
+                | 半长轴 a | 6878 km | {a_km:.1f} km |
+                | 轨道高度 h | 500 km | {h_target:.1f} km |
+                | 偏心率 e | 0 | ~0 |
+                | 轨道倾角 i | 97.4° | 97.4° |
+                | 升交点赤经 Ω | 83.5° | {raan_deg}° |
+                | 近地点幅角 ω | 0° | 0° |
+                | 真近点角 ν | 0° | 0° |
+                """)
+            with col_orb2:
+                st.markdown("**入轨参数**")
+                st.markdown(f"""
+                | 参数 | 名义值 | 重构值 |
+                |------|--------|--------|
+                | 入轨速度 | 7.61 km/s | {v_target:.2f} km/s |
+                | 圆轨道速度 | 7.61 km/s | {v_circ:.2f} km/s |
+                | 轨道周期 | 5677 s | {T_s:.0f} s |
+                | 飞行路径角 γ | 0° | ~0° |
+                | 发射点纬度 | 40.96°N | 40.96°N |
+                | 发射点经度 | 100.28°E | 100.28°E |
+                """)
+
         # ===== 热启动 Tab：冷/热启动对比 =====
         with tab_warmstart:
             st.markdown("#### 学习热启动 vs 冷启动")

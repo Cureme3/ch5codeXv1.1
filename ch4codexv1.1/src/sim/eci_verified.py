@@ -35,8 +35,8 @@ def simulate(cfg: KZ1AConfig):
 
 
 def simulate_kz1a_ascent(
-    t_end: float = 1100.0,
-    dt: float = 0.5,
+    t_end: float = 4000.0,
+    dt: float = 0.01,
     preset: str = "nasaspaceflight",
     use_fpa_vr_feedback: bool = True,
     gamma_feedback_gain: float = 0.5,

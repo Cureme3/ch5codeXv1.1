@@ -77,28 +77,20 @@ def load_trajectory_data() -> pd.DataFrame:
 
     # 读取所有 replan 轨迹的终端数据
     base_results = []
-    fault_id_map = {
-        'thrust_degradation': 'F1',
-        'tvc_rate_limit': 'F2',
-        'tvc_stuck': 'F3',
-        'sensor_bias': 'F4',
-        'event_delay': 'F5'
-    }
 
     for fname in os.listdir(data_dir):
         if '_replan.npz' in fname and 'eta' in fname:
             fpath = data_dir / fname
             data = np.load(fpath, allow_pickle=True)
 
+            # 从文件名提取故障ID (F1, F2, ...)
+            fault_type = fname.split('_')[0]  # e.g., "F1_eta02_replan.npz" -> "F1"
+
             # 提取终端数据
             terminal_alt = float(data['altitude'][-1])
             terminal_dr = float(data['downrange'][-1])
             eta = float(data['eta'])
             domain = str(data['mission_domain']).lower().replace('_', '-')
-            fault_type_raw = str(data['fault_type'])
-
-            # 映射到 F1-F5
-            fault_type = fault_id_map.get(fault_type_raw, fault_type_raw)
 
             base_results.append({
                 'fault_type': fault_type,
@@ -146,17 +138,17 @@ def load_trajectory_data() -> pd.DataFrame:
 
 
 def plot_fig5_16_severe_downrange_boxplot(df: pd.DataFrame):
-    """图5-16：五类严重故障在不同任务域下的终端行距统计（η=0.8）
+    """图5-16：五类故障在不同任务域下的终端行距统计
 
-    严重度 η=0.8 时，F1～F5 在不同任务域中的终端行距箱线图统计。
+    F1～F5 在不同任务域中的终端行距箱线图统计。
     """
     print("\n" + "=" * 60)
-    print("二、图5-16：五类严重故障在不同任务域下的终端行距统计（η=0.8）")
+    print("二、图5-16：五类故障在不同任务域下的终端行距统计")
     print("=" * 60)
 
-    # 选取严重度 η=0.8 的子集
-    df_severe = df[df["eta"] == 0.8].copy()
-    print(f"  η=0.8 子集共 {len(df_severe)} 条记录")
+    # 使用全部数据
+    df_severe = df.copy()
+    print(f"  全部数据共 {len(df_severe)} 条记录")
 
     # 规范化字符串
     df_severe["domain"] = df_severe["domain"].str.lower().str.strip()
@@ -206,7 +198,7 @@ def plot_fig5_16_severe_downrange_boxplot(df: pd.DataFrame):
     plt.xticks(x_pos, fault_order, fontsize=11)
     plt.xlabel("故障类型", fontsize=12)
     plt.ylabel("终端行距 / km", fontsize=12)
-    plt.title("五类严重故障在不同任务域下的终端行距统计（η=0.8）", fontsize=14)
+    plt.title("五类故障在不同任务域下的终端行距统计", fontsize=14)
     plt.grid(alpha=0.3, linestyle="--", axis="y")
 
     # 创建图例

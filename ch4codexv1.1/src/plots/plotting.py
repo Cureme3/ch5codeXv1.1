@@ -28,6 +28,7 @@ def setup_matplotlib() -> None:
     system_name = platform.system()
     if system_name == "Windows":
         # Windows: 优先宋体(SimSun)，其次黑体(SimHei)
+        # 注意: 列表顺序很重要，Matplotlib 会按顺序查找
         font_serif = ["SimSun", "Times New Roman", "SimHei"]
         font_sans = ["SimHei", "Arial", "Microsoft YaHei"]
     else:
@@ -42,7 +43,8 @@ def setup_matplotlib() -> None:
         "font.sans-serif": font_sans + list(rcParams["font.sans-serif"]),
 
         # --- 数学公式设置 ---
-        "mathtext.fontset": "stix",          # 使用 stix 字体渲染公式
+        # 使用 stix 字体渲染公式，使其极其接近 LaTeX/Times New Roman
+        "mathtext.fontset": "stix",
 
         # --- 布局与线条 ---
         "axes.unicode_minus": False,         # 解决负号显示
@@ -68,7 +70,7 @@ def setup_matplotlib() -> None:
         "savefig.pad_inches": 0.1,
     }
     rcParams.update(config)
-    print(f"Plotting Style: Configured for {system_name} with serif fonts (宋体 + Times New Roman)")
+    print(f"Plotting Style: Configured for {system_name} with serif fonts")
 
 # 兼容旧接口
 def set_cn_pub_style() -> None:
@@ -82,6 +84,7 @@ def save_figure(fig: plt.Figure, outfile: Path, dpi: int = 300) -> None:
     ensure_dir(outfile)
     fig.tight_layout()
     fig.savefig(outfile, dpi=dpi)
+    # 同时生成 PDF，方便插入 LaTeX 论文
     fig.savefig(outfile.with_suffix(".pdf"), dpi=dpi)
     plt.close(fig)
 

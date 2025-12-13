@@ -5,11 +5,19 @@
 对 F1~F5 故障场景及不同严重度 η 值，生成：
 1. 三轨迹对比图（高度/速度/下行程 vs 时间）
 2. 路径约束对比图（动压/过载 vs 时间，含约束上限）
+3. ECI坐标系3D轨迹图
+
+适配4000s仿真时长（霍曼转移入轨）：
+- S4点火: ~287s
+- BURN1: 抬升远地点到500km
+- COAST: 滑行到远地点 (~2700s)
+- BURN2: 远地点圆化 (~3500s)
 
 输出文件:
 - outputs/ch4/figures/ch4_fault_trajectories/{fault_id}_eta{eta:.2f}_traj.png/pdf
 - outputs/ch4/figures/ch4_fault_trajectories/constraints/{fault_id}_eta{eta:.2f}_q_constraints.png/pdf
 - outputs/ch4/figures/ch4_fault_trajectories/constraints/{fault_id}_eta{eta:.2f}_n_constraints.png/pdf
+- outputs/ch4/figures/ch4_fault_trajectories/3d/{fault_id}_eta{eta:.2f}_3d.png/pdf
 
 命令行用法:
     python -m scripts.make_figs_ch4_fault_trajectories
@@ -23,6 +31,13 @@ import argparse
 import sys
 from pathlib import Path
 from typing import List, Tuple
+from concurrent.futures import ProcessPoolExecutor, as_completed
+
+# 在导入matplotlib之前设置字体，确保中文正常显示
+import matplotlib
+matplotlib.rcParams['font.family'] = 'serif'
+matplotlib.rcParams['font.serif'] = ['SimSun', 'Times New Roman', 'SimHei']
+matplotlib.rcParams['axes.unicode_minus'] = False
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -42,6 +57,7 @@ from src.plots.plotting import (
 )
 from src.sim.viz_trajectories import (
     build_three_trajectories,
+    load_three_trajectories_from_npz,
     ThreeTrajectories,
     get_default_fault_ids,
     get_default_etas,
@@ -106,6 +122,22 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=1.0,
         help="时间网格步长 [s]，默认 1.0",
+    )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=12,
+        help="并行线程数，默认 12",
+    )
+    parser.add_argument(
+        "--no-npz",
+        action="store_true",
+        help="不使用npz快速加载，重新运行仿真",
+    )
+    parser.add_argument(
+        "--no-3d",
+        action="store_true",
+        help="跳过3D轨迹图生成",
     )
     return parser.parse_args()
 
@@ -219,14 +251,145 @@ def plot_normal_load_constraint(
     print(f"  - [中文期刊版] 过载约束图已保存: {outpath}")
 
 
+def plot_eci_3d_trajectory(
+    traj: ThreeTrajectories,
+    output_dir: Path,
+) -> None:
+    """生成ECI坐标系下的3D轨迹图。
+
+    展示名义轨迹、故障轨迹、重构轨迹在ECI坐标系下的三维空间分布。
+    包含地球参考球、目标轨��（500km圆轨道/200x400km椭圆轨道）。
+    """
+    from mpl_toolkits.mplot3d import Axes3D
+
+    # 检查是否有ECI数据
+    if traj.r_eci_nom is None:
+        print(f"  - [WARN] 无ECI数据，跳过3D轨迹图")
+        return
+
+    fig = plt.figure(figsize=(14, 12))
+    ax = fig.add_subplot(111, projection='3d')
+
+    fault_id = traj.fault_id
+    eta = traj.eta
+    domain = traj.mission_domain
+
+    # 地球半径 (km)
+    R_EARTH_KM = 6371.0
+
+    # 转换为km
+    r_nom = traj.r_eci_nom / 1000.0  # m -> km
+    r_fault = traj.r_eci_fault / 1000.0
+    r_reconfig = traj.r_eci_reconfig / 1000.0
+
+    # 绘制地球参考球（简化为线框）
+    u = np.linspace(0, 2 * np.pi, 30)
+    v = np.linspace(0, np.pi, 20)
+    x_earth = R_EARTH_KM * np.outer(np.cos(u), np.sin(v))
+    y_earth = R_EARTH_KM * np.outer(np.sin(u), np.sin(v))
+    z_earth = R_EARTH_KM * np.outer(np.ones(np.size(u)), np.cos(v))
+    ax.plot_wireframe(x_earth, y_earth, z_earth, color='lightblue', alpha=0.3, linewidth=0.5)
+
+    # 绘制轨迹（降采样以提高性能）
+    step = max(1, len(traj.t) // 500)
+
+    ax.plot(r_nom[::step, 0], r_nom[::step, 1], r_nom[::step, 2],
+            color=DEFAULT_COLORS["nominal"], linewidth=2.0, label="标称轨迹(500km圆轨道)")
+    ax.plot(r_fault[::step, 0], r_fault[::step, 1], r_fault[::step, 2],
+            color=DEFAULT_COLORS["fault"], linestyle="--", linewidth=2.0, label="故障开环")
+    ax.plot(r_reconfig[::step, 0], r_reconfig[::step, 1], r_reconfig[::step, 2],
+            color=DEFAULT_COLORS["replan"], linestyle="-.", linewidth=2.0, label=f"重构轨迹({domain.name if domain else 'N/A'})")
+
+    # 标记起点和终点
+    ax.scatter(*r_nom[0], color='green', s=150, marker='o', label='发射点', zorder=10)
+    ax.scatter(*r_nom[-1], color=DEFAULT_COLORS["nominal"], s=200, marker='*', label='标称入轨点', zorder=10)
+    ax.scatter(*r_reconfig[-1], color=DEFAULT_COLORS["replan"], s=150, marker='^', label='重构入轨点', zorder=10)
+
+    # 绘制目标轨道参考圆
+    theta = np.linspace(0, 2 * np.pi, 100)
+
+    # 500km圆轨道（RETAIN目标）
+    r_500km = R_EARTH_KM + 500
+    ax.plot(r_500km * np.cos(theta), r_500km * np.sin(theta), np.zeros_like(theta),
+            'g-', alpha=0.6, linewidth=2, label='500km圆轨道(RETAIN)')
+
+    # 200x400km椭圆轨道（DEGRADED目标）- 简化为近地点和远地点圆
+    r_200km = R_EARTH_KM + 200
+    r_400km = R_EARTH_KM + 400
+    ax.plot(r_200km * np.cos(theta), r_200km * np.sin(theta), np.zeros_like(theta),
+            'm--', alpha=0.4, linewidth=1.5, label='200km(DEGRADED近地点)')
+    ax.plot(r_400km * np.cos(theta), r_400km * np.sin(theta), np.zeros_like(theta),
+            'm:', alpha=0.4, linewidth=1.5, label='400km(DEGRADED远地点)')
+
+    # 增大字体
+    ax.set_xlabel('X (km)', fontsize=14, labelpad=10)
+    ax.set_ylabel('Y (km)', fontsize=14, labelpad=10)
+    ax.set_zlabel('Z (km)', fontsize=14, labelpad=10)
+    ax.tick_params(axis='both', labelsize=12)
+    ax.set_title(f'{fault_id} (η={eta:.2f}) - ECI 3D轨迹\n任务域: {domain.name if domain else "N/A"}', fontsize=16, fontweight='bold')
+    ax.legend(loc='upper left', fontsize=11, framealpha=0.9)
+
+    # 设置等比例显示
+    max_range = np.max([
+        np.max(np.abs(r_nom)),
+        np.max(np.abs(r_fault)),
+        np.max(np.abs(r_reconfig))
+    ]) * 1.1
+    ax.set_xlim([-max_range, max_range])
+    ax.set_ylim([-max_range, max_range])
+    ax.set_zlim([-max_range, max_range])
+
+    # 调整视角
+    ax.view_init(elev=25, azim=-50)
+
+    plt.tight_layout()
+
+    filename = f"{fault_id}_eta{eta:.2f}_3d.png"
+    outpath = output_dir / filename
+    save_figure(fig, outpath)
+    print(f"  - [中文期刊版] ECI 3D轨迹图已保存: {outpath}")
+
+
+def _process_single_figure(args):
+    """处理单个故障+eta组合的图片生成（用于并行）。"""
+    fault_id, eta, output_dir, constraints_dir, eci_3d_dir, generate_constraints, generate_3d, use_npz = args
+
+    try:
+        # 从npz快速加载或重新仿真
+        if use_npz:
+            traj = load_three_trajectories_from_npz(fault_id=fault_id, eta=eta)
+        else:
+            traj = build_three_trajectories(fault_id=fault_id, eta=eta, t_step=1.0)
+
+        # Trajectory comparison plot
+        plot_trajectory_comparison(traj, output_dir)
+
+        # Constraint plots
+        if generate_constraints:
+            plot_dynamic_pressure_constraint(traj, constraints_dir)
+            plot_normal_load_constraint(traj, constraints_dir)
+
+        # ECI 3D trajectory plot
+        if generate_3d:
+            plot_eci_3d_trajectory(traj, eci_3d_dir)
+
+        return (fault_id, eta, True, None)
+    except Exception as e:
+        import traceback
+        return (fault_id, eta, False, str(e) + "\n" + traceback.format_exc())
+
+
 def generate_fault_trajectory_figs(
     fault_ids: List[str],
     etas: List[float],
     output_dir: Path,
     t_step: float = 1.0,
     generate_constraints: bool = True,
+    generate_3d: bool = True,
+    workers: int = 12,
+    use_npz: bool = True,
 ) -> None:
-    """生成多故障多严重度轨迹对比图。
+    """生成多故障多严重度轨迹对比图（支持多线程并行）。
 
     Parameters
     ----------
@@ -240,38 +403,43 @@ def generate_fault_trajectory_figs(
         时间网格步长
     generate_constraints : bool
         是否生成路径约束图
+    generate_3d : bool
+        是否生成ECI 3D轨迹图
+    workers : int
+        并行线程数，默认12
+    use_npz : bool
+        是否从npz文件快速加载数据，默认True
     """
     output_dir.mkdir(parents=True, exist_ok=True)
     constraints_dir = output_dir / "constraints"
     if generate_constraints:
         constraints_dir.mkdir(parents=True, exist_ok=True)
+    eci_3d_dir = output_dir / "3d"
+    if generate_3d:
+        eci_3d_dir.mkdir(parents=True, exist_ok=True)
 
-    total = len(fault_ids) * len(etas)
-    idx = 0
-
+    # 构建任务列表
+    tasks = []
     for fault_id in fault_ids:
         for eta in etas:
-            idx += 1
-            print(f"\n[{idx}/{total}] 生成 {fault_id}, η={eta:.2f} ...")
+            tasks.append((fault_id, eta, output_dir, constraints_dir, eci_3d_dir,
+                         generate_constraints, generate_3d, use_npz))
 
-            try:
-                traj = build_three_trajectories(
-                    fault_id=fault_id,
-                    eta=eta,
-                    t_step=t_step,
-                )
+    total = len(tasks)
+    print(f"总任务数: {total}, 并行线程: {workers}, 数据源: {'npz快速加载' if use_npz else '重新仿真'}")
 
-                # Trajectory comparison plot
-                plot_trajectory_comparison(traj, output_dir)
+    # 并行执行
+    completed = 0
+    with ProcessPoolExecutor(max_workers=workers) as executor:
+        futures = {executor.submit(_process_single_figure, task): task for task in tasks}
 
-                # Constraint plots
-                if generate_constraints:
-                    plot_dynamic_pressure_constraint(traj, constraints_dir)
-                    plot_normal_load_constraint(traj, constraints_dir)
-
-            except Exception as e:
-                print(f"  [WARN] 生成失败: {e}")
-                continue
+        for future in as_completed(futures):
+            completed += 1
+            fault_id, eta, success, error = future.result()
+            if success:
+                print(f"[{completed}/{total}] {fault_id} η={eta:.1f} - 完成")
+            else:
+                print(f"[{completed}/{total}] {fault_id} η={eta:.1f} - 失败: {error[:80]}...")
 
 
 def generate_path_constraint_figs(
@@ -481,12 +649,19 @@ def main() -> None:
     print(f"输出目录: {output_dir}")
     print()
 
+    print(f"并行线程: {args.workers}")
+    print(f"数据源: {'重新仿真' if args.no_npz else 'npz快速加载'}")
+    print()
+
     generate_fault_trajectory_figs(
         fault_ids=fault_ids,
         etas=etas,
         output_dir=output_dir,
         t_step=args.t_step,
         generate_constraints=not args.no_constraints,
+        generate_3d=not args.no_3d,
+        workers=args.workers,
+        use_npz=not args.no_npz,
     )
 
     # 如果非快速模式，也生成2x2组合图
